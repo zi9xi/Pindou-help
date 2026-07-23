@@ -1,21 +1,21 @@
 <view class="page theme-{{theme}}">
 
   <!-- 空状态：上传入口 -->
-  <view wx:if="{{!ready}}" class="empty" bindtap="chooseImage">
+  <view wx:if="{{stage === 'empty'}}" class="empty" bindtap="chooseImage">
     <view class="empty-card">
       <view class="empty-icon">🧩</view>
       <view class="empty-title">上传拼豆图纸</view>
-      <view class="empty-desc">选择一张已转换好的拼豆图（建议 PNG）{"\n"}点选任意颜色，图纸上只高亮该颜色的豆子</view>
+      <view class="empty-desc">选择一张带网格的拼豆图纸{"\n"}自动识别豆数，点选颜色只高亮它</view>
       <view class="btn-primary">选择图片</view>
     </view>
     <view class="empty-tip">单指拖动 · 双指缩放 · 点按格子选色</view>
   </view>
 
-  <!-- 主界面（流式布局：顶栏 / 画布 / 面板，避免原生组件遮挡） -->
+  <!-- 主界面（流式布局：顶栏 / 画布 / 面板） -->
   <block wx:else>
     <view class="topbar">
       <view class="topbar-btn" bindtap="chooseImage">换图</view>
-      <view class="topbar-info">{{gridW}}×{{gridH}} · {{colors.length}}色 · 共{{totalBeads}}豆</view>
+      <view class="topbar-info">{{stage === 'adjust' ? '对齐图纸网格后点确定' : gridW + '×' + gridH + ' · ' + colors.length + '色 · 共' + totalBeads + '豆'}}</view>
       <view class="topbar-btn" bindtap="toggleTheme">{{theme === 'dark' ? '☀️' : '🌙'}}</view>
     </view>
 
@@ -29,8 +29,30 @@
       bindtouchcancel="onTouchEnd"
     ></canvas>
 
-    <!-- 底部颜色面板 -->
-    <view class="panel">
+    <!-- 校准面板 -->
+    <view class="panel" wx:if="{{stage === 'adjust'}}">
+      <view class="panel-header">
+        <text class="panel-title">识别为 {{cols}} × {{rows}} 豆，不准可微调</text>
+      </view>
+      <view class="adjust-row">
+        <view class="stepper">
+          <text class="stepper-label">宽</text>
+          <view class="stepper-btn" data-k="cols" data-d="-1" bindtap="onStep">−</view>
+          <text class="stepper-val">{{cols}}</text>
+          <view class="stepper-btn" data-k="cols" data-d="1" bindtap="onStep">＋</view>
+        </view>
+        <view class="stepper">
+          <text class="stepper-label">高</text>
+          <view class="stepper-btn" data-k="rows" data-d="-1" bindtap="onStep">−</view>
+          <text class="stepper-val">{{rows}}</text>
+          <view class="stepper-btn" data-k="rows" data-d="1" bindtap="onStep">＋</view>
+        </view>
+      </view>
+      <view class="btn-primary adjust-confirm" bindtap="confirmGrid">确定，开始摆豆</view>
+    </view>
+
+    <!-- 颜色面板 -->
+    <view class="panel" wx:else>
       <view class="panel-header">
         <text class="panel-title">{{selectedIndex >= 0 ? '只显示选中颜色 · 点图纸格子可切换' : '点击颜色，只显示它'}}</text>
         <text wx:if="{{selectedIndex >= 0}}" class="panel-clear" bindtap="clearSelect">显示全部</text>

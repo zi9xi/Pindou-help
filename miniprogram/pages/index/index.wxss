@@ -227,3 +227,53 @@
   text-align: right;
   flex-shrink: 0;
 }
+
+/* ========== 校准面板 ========== */
+.adjust-row {
+  display: flex;
+  justify-content: space-around;
+  padding: 8rpx 32rpx 24rpx;
+}
+
+.stepper {
+  display: flex;
+  align-items: center;
+}
+
+.stepper-label {
+  font-size: 26rpx;
+  color: var(--text-dim);
+  margin-right: 16rpx;
+}
+
+.stepper-btn {
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 2rpx solid var(--border);
+  color: var(--text);
+  font-size: 32rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stepper-btn:active {
+  transform: scale(0.9);
+  border-color: var(--accent);
+}
+
+.stepper-val {
+  width: 80rpx;
+  text-align: center;
+  font-size: 32rpx;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.adjust-confirm {
+  margin: 0 32rpx;
+  text-align: center;
+  padding: 20rpx 0;
+}
