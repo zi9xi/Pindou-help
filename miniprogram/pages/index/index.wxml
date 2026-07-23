@@ -11,8 +11,14 @@
     <view class="empty-tip">单指拖动 · 双指缩放 · 点按格子选色</view>
   </view>
 
-  <!-- 主界面 -->
+  <!-- 主界面（流式布局：顶栏 / 画布 / 面板，避免原生组件遮挡） -->
   <block wx:else>
+    <view class="topbar">
+      <view class="topbar-btn" bindtap="chooseImage">换图</view>
+      <view class="topbar-info">{{gridW}}×{{gridH}} · {{colors.length}}色 · 共{{totalBeads}}豆</view>
+      <view class="topbar-btn" bindtap="toggleTheme">{{theme === 'dark' ? '☀️' : '🌙'}}</view>
+    </view>
+
     <canvas
       type="2d"
       id="board"
@@ -22,13 +28,6 @@
       bindtouchend="onTouchEnd"
       bindtouchcancel="onTouchEnd"
     ></canvas>
-
-    <!-- 顶部信息栏 -->
-    <view class="topbar">
-      <view class="topbar-btn" bindtap="chooseImage">换图</view>
-      <view class="topbar-info">{{gridW}}×{{gridH}} · {{colors.length}}色 · 共{{totalBeads}}豆</view>
-      <view class="topbar-btn" bindtap="toggleTheme">{{theme === 'dark' ? '☀️' : '🌙'}}</view>
-    </view>
 
     <!-- 底部颜色面板 -->
     <view class="panel">

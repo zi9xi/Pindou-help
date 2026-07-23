@@ -2,7 +2,8 @@ const { buildPalette } = require('../../utils/color');
 
 const BASE_CELL = 12;      // 1 倍缩放时每个豆格的尺寸（px）
 const MAX_GRID = 500;      // 图纸最大边长（像素）
-const CIRCLE_MIN = 9;      // 格子的px大于该值时画圆形豆，否则画方块
+const CIRCLE_MIN = 9;      // 格子 >= 该 px 时画圆形豆
+const CELL_DETAIL_MIN = 4; // 格子 < 该 px 时走离屏位图渲染（总览模式）
 
 Page({
   data: {
@@ -19,11 +20,14 @@ Page({
   onLoad() {
     this.setData({ theme: wx.getStorageSync('theme') || 'dark' });
     // 内部状态（不进 setData，避免大数组序列化）
-    this.imageData = null;   // 原始 ImageData（调容差时复用）
-    this.palette = null;     // 调色板 [{key,hex,r,g,b,count}]
-    this.grid = null;        // Int32Array 逐像素调色板下标
+    this.imageData = null;      // 原始 ImageData（调容差时复用）
+    this.palette = null;        // 调色板 [{key,hex,r,g,b,count}]
+    this.grid = null;           // Int32Array 逐像素调色板下标
+    this.patternCanvas = null;  // 全色离屏位图（1px = 1 豆）
+    this.dimCanvas = null;      // 变暗底图
+    this.isoCanvas = null;      // 仅选中色的离屏位图
     this.view = { scale: 1, x: 0, y: 0 };
-    this.gesture = null;     // 手势状态
+    this.gesture = null;
     this.boardW = 0;
     this.boardH = 0;
   },
@@ -41,7 +45,7 @@ Page({
     }
     this.createSelectorQuery()
       .select('#board')
-      .fields({ node: true, size: true })
+      .fields({ node: true, size: true, rect: true })
       .exec((res) => {
         if (!res || !res[0] || !res[0].node) return;
         this.canvas = res[0].node;
@@ -49,6 +53,8 @@ Page({
         this.dpr = (wx.getWindowInfo ? wx.getWindowInfo().pixelRatio : 2) || 2;
         this.boardW = res[0].width;
         this.boardH = res[0].height;
+        this.boardLeft = res[0].left || 0;
+        this.boardTop = res[0].top || 0;
         this.canvas.width = res[0].width * this.dpr;
         this.canvas.height = res[0].height * this.dpr;
         cb && cb();
@@ -62,8 +68,7 @@ Page({
       count: 1,
       mediaType: ['image'],
       success: (res) => {
-        const path = res.tempFiles[0].tempFilePath;
-        this.loadImage(path);
+        this.loadImage(res.tempFiles[0].tempFilePath);
       }
     });
   },
@@ -103,14 +108,14 @@ Page({
     });
   },
 
-  /** 像素 -> 调色板 + 网格索引 */
+  /** 像素 -> 调色板 + 网格索引 + 离屏位图 */
   process() {
-    const { data } = this.imageData;
     const t0 = Date.now();
-    const { palette, grid, totalBeads } = buildPalette(data, this.data.tolerance);
+    const { palette, grid, totalBeads } = buildPalette(this.imageData.data, this.data.tolerance);
     console.log(`[bead] palette built: ${palette.length} colors in ${Date.now() - t0}ms`);
     this.palette = palette;
     this.grid = grid;
+    this.buildPatternCanvases();
     this.setData({
       ready: true,
       colors: palette,
@@ -130,6 +135,60 @@ Page({
     if (this.imageData) this.process();
   },
 
+  /* ================= 离屏位图（总览模式用） ================= */
+
+  /** 全色位图 + 变暗位图 */
+  buildPatternCanvases() {
+    const w = this.data.gridW;
+    const h = this.data.gridH;
+    const dark = this.data.theme === 'dark';
+
+    const full = wx.createOffscreenCanvas({ type: '2d', width: w, height: h });
+    const fctx = full.getContext('2d');
+    const fimg = fctx.createImageData(w, h);
+    const fd = fimg.data;
+
+    const dim = wx.createOffscreenCanvas({ type: '2d', width: w, height: h });
+    const dctx = dim.getContext('2d');
+    const dimg = dctx.createImageData(w, h);
+    const dd = dimg.data;
+    const dimR = dark ? 40 : 232;
+    const dimG = dark ? 40 : 232;
+    const dimB = dark ? 52 : 240;
+
+    for (let p = 0; p < this.grid.length; p++) {
+      const ci = this.grid[p];
+      if (ci < 0) continue;
+      const c = this.palette[ci];
+      const o = p * 4;
+      fd[o] = c.r; fd[o + 1] = c.g; fd[o + 2] = c.b; fd[o + 3] = 255;
+      dd[o] = dimR; dd[o + 1] = dimG; dd[o + 2] = dimB; dd[o + 3] = 255;
+    }
+    fctx.putImageData(fimg, 0, 0);
+    dctx.putImageData(dimg, 0, 0);
+    this.patternCanvas = full;
+    this.dimCanvas = dim;
+    this.isoCanvas = null;
+  },
+
+  /** 仅包含选中颜色的位图 */
+  buildIsoCanvas(sel) {
+    const w = this.data.gridW;
+    const h = this.data.gridH;
+    const iso = wx.createOffscreenCanvas({ type: '2d', width: w, height: h });
+    const ictx = iso.getContext('2d');
+    const img = ictx.createImageData(w, h);
+    const d = img.data;
+    const c = this.palette[sel];
+    for (let p = 0; p < this.grid.length; p++) {
+      if (this.grid[p] !== sel) continue;
+      const o = p * 4;
+      d[o] = c.r; d[o + 1] = c.g; d[o + 2] = c.b; d[o + 3] = 255;
+    }
+    ictx.putImageData(img, 0, 0);
+    this.isoCanvas = iso;
+  },
+
   /* ================= 视图变换 ================= */
 
   fitView() {
@@ -139,18 +198,19 @@ Page({
       this.boardW / (gridW * BASE_CELL),
       this.boardH / (gridH * BASE_CELL)
     );
+    const s = Math.min(scale, 2);
     this.view = {
-      scale: Math.min(scale, 2),
-      x: (this.boardW - gridW * BASE_CELL * Math.min(scale, 2)) / 2,
-      y: (this.boardH - gridH * BASE_CELL * Math.min(scale, 2)) / 2
+      scale: s,
+      x: (this.boardW - gridW * BASE_CELL * s) / 2,
+      y: (this.boardH - gridH * BASE_CELL * s) / 2
     };
   },
 
   clampScale(s) {
-    return Math.min(20, Math.max(0.15, s));
+    return Math.min(20, Math.max(0.05, s));
   },
 
-  /* ================= 渲染（只画可见区域） ================= */
+  /* ================= 渲染（混合：总览位图 / 细节逐格） ================= */
 
   render() {
     const ctx = this.ctx;
@@ -167,14 +227,29 @@ Page({
     const h = this.data.gridH;
     const sel = this.data.selectedIndex;
 
+    if (cell < CELL_DETAIL_MIN) {
+      // 总览：整图位图缩放绘制，O(1) 复杂度
+      ctx.imageSmoothingEnabled = false;
+      const dw = w * cell;
+      const dh = h * cell;
+      if (sel >= 0 && this.isoCanvas) {
+        ctx.drawImage(this.dimCanvas, x, y, dw, dh);
+        ctx.drawImage(this.isoCanvas, x, y, dw, dh);
+      } else {
+        ctx.drawImage(this.patternCanvas, x, y, dw, dh);
+      }
+      return;
+    }
+
+    // 细节：只画可见区域，逐格绘制
     const x0 = Math.max(0, Math.floor(-x / cell));
     const y0 = Math.max(0, Math.floor(-y / cell));
     const x1 = Math.min(w - 1, Math.ceil((this.boardW - x) / cell));
     const y1 = Math.min(h - 1, Math.ceil((this.boardH - y) / cell));
 
-    const dimFill = dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
+    const dimFill = dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
     const drawCircle = cell >= CIRCLE_MIN;
-    const gap = drawCircle ? 0 : Math.max(1, cell * 0.08);
+    const gap = cell >= 6 ? Math.max(1, cell * 0.08) : 0;
 
     for (let gy = y0; gy <= y1; gy++) {
       const rowBase = gy * w;
@@ -199,27 +274,35 @@ Page({
 
   /* ================= 手势：拖动 / 缩放 / 点按 ================= */
 
+  /** 触摸点转换为画布内坐标 */
+  localTouch(t) {
+    return { x: t.x - (this.boardLeft || 0), y: t.y - (this.boardTop || 0) };
+  },
+
   onTouchStart(e) {
     const ts = e.touches;
     if (ts.length === 1) {
+      const t = this.localTouch(ts[0]);
       this.gesture = {
         mode: 'pan',
         startT: Date.now(),
         moved: false,
-        sx: ts[0].x,
-        sy: ts[0].y,
+        sx: t.x,
+        sy: t.y,
         vx: this.view.x,
         vy: this.view.y
       };
     } else if (ts.length === 2) {
-      const dx = ts[1].x - ts[0].x;
-      const dy = ts[1].y - ts[0].y;
+      const t0 = this.localTouch(ts[0]);
+      const t1 = this.localTouch(ts[1]);
+      const dx = t1.x - t0.x;
+      const dy = t1.y - t0.y;
       this.gesture = {
         mode: 'pinch',
         moved: true,
         dist0: Math.hypot(dx, dy),
-        cx: (ts[0].x + ts[1].x) / 2,
-        cy: (ts[0].y + ts[1].y) / 2,
+        cx: (t0.x + t1.x) / 2,
+        cy: (t0.y + t1.y) / 2,
         scale0: this.view.scale,
         vx: this.view.x,
         vy: this.view.y
@@ -233,19 +316,22 @@ Page({
     const ts = e.touches;
 
     if (g.mode === 'pan' && ts.length === 1) {
-      const dx = ts[0].x - g.sx;
-      const dy = ts[0].y - g.sy;
+      const t = this.localTouch(ts[0]);
+      const dx = t.x - g.sx;
+      const dy = t.y - g.sy;
       if (Math.abs(dx) + Math.abs(dy) > 6) g.moved = true;
       this.view.x = g.vx + dx;
       this.view.y = g.vy + dy;
       this.render();
     } else if (ts.length === 2) {
       if (g.mode === 'pan') { this.onTouchStart(e); return; }
-      const dx = ts[1].x - ts[0].x;
-      const dy = ts[1].y - ts[0].y;
+      const t0 = this.localTouch(ts[0]);
+      const t1 = this.localTouch(ts[1]);
+      const dx = t1.x - t0.x;
+      const dy = t1.y - t0.y;
       const dist = Math.hypot(dx, dy);
-      const cx = (ts[0].x + ts[1].x) / 2;
-      const cy = (ts[0].y + ts[1].y) / 2;
+      const cx = (t0.x + t1.x) / 2;
+      const cy = (t0.y + t1.y) / 2;
       const scale = this.clampScale(g.scale0 * (dist / g.dist0));
       // 以双指中心为锚点缩放
       const k = scale / g.scale0;
@@ -263,7 +349,8 @@ Page({
     if (Date.now() - g.startT > 400) return;
     const t = e.changedTouches[0];
     if (!t) return;
-    this.pickColorAt(t.x, t.y);
+    const p = this.localTouch(t);
+    this.pickColorAt(p.x, p.y);
   },
 
   /** 点按格子 -> 选中该格颜色 */
@@ -275,27 +362,35 @@ Page({
     if (gx < 0 || gy < 0 || gx >= this.data.gridW || gy >= this.data.gridH) return;
     const ci = this.grid[gy * this.data.gridW + gx];
     if (ci < 0) return;
-    this.setData({ selectedIndex: ci === this.data.selectedIndex ? -1 : ci });
-    this.render();
+    this.applySelection(ci === this.data.selectedIndex ? -1 : ci);
   },
 
   /* ================= 颜色选择与主题 ================= */
 
-  onChipTap(e) {
-    const index = e.currentTarget.dataset.index;
-    this.setData({ selectedIndex: index === this.data.selectedIndex ? -1 : index });
+  applySelection(index) {
+    if (index >= 0) this.buildIsoCanvas(index);
+    this.setData({ selectedIndex: index });
     this.render();
   },
 
+  onChipTap(e) {
+    const index = e.currentTarget.dataset.index;
+    this.applySelection(index === this.data.selectedIndex ? -1 : index);
+  },
+
   clearSelect() {
-    this.setData({ selectedIndex: -1 });
-    this.render();
+    this.applySelection(-1);
   },
 
   toggleTheme() {
     const theme = this.data.theme === 'dark' ? 'light' : 'dark';
     this.setData({ theme });
     wx.setStorageSync('theme', theme);
+    if (this.grid) {
+      // 变暗位图颜色随主题变化，重建
+      this.buildPatternCanvases();
+      if (this.data.selectedIndex >= 0) this.buildIsoCanvas(this.data.selectedIndex);
+    }
     this.render();
   },
 
