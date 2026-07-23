@@ -1,10 +1,72 @@
-const { LAB_SETS, SIZES, nearestIndex } = require('../../utils/palette');
+const { LAB_SETS, SIZES } = require('../../utils/palette');
 
 const BASE_CELL = 12;       // 1 倍缩放时每个豆格的尺寸（px）
-const MAX_GRID = 800;       // 源图最大边长（像素，仅用于读像素，不是豆数）
+const MAX_SOURCE_EDGE = 2048; // 保留原图网格细节，同时控制 ImageData 内存
+const MAX_CELLS = 600;      // 单边最大豆数（覆盖 500×500 图纸）
+const TEXT_CONTRAST = 40;   // 抗锯齿后文字与底色的最小亮度差
 const CIRCLE_MIN = 9;       // 格子 >= 该 px 时画圆形豆
 const CELL_DETAIL_MIN = 4;  // 格子 < 该 px 时走离屏位图渲染
-const EMPTY_TH = 245;       // 采样色三通道均高于此值视为空白格
+
+// 标准导出图使用的显示色与实体豆色卡存在明度差，这组参考色用于还原图中文字色号。
+const CHART_COLOR_REFERENCES = {
+  A23: [248, 225, 209],
+  B25: [102, 135, 110],
+  B27: [192, 204, 159],
+  B30: [245, 254, 198],
+  C20: [45, 134, 202],
+  E2: [248, 209, 229],
+  E11: [253, 233, 226],
+  E17: [245, 229, 239],
+  E18: [245, 213, 225],
+  F14: [242, 173, 174],
+  F19: [178, 77, 78],
+  F20: [197, 149, 147],
+  F21: [237, 182, 197],
+  F23: [230, 133, 109],
+  F25: [213, 86, 86],
+  H1: [242, 242, 242],
+  H2: [255, 253, 254],
+  H4: [136, 131, 138],
+  H5: [70, 69, 75],
+  H7: [1, 1, 1],
+  H16: [52, 44, 42],
+  H17: [240, 240, 240]
+};
+
+function nearestChartIndex(set, r, g, b) {
+  let best = -1;
+  let bestDistance = Infinity;
+  for (let i = 0; i < set.length; i++) {
+    const reference = CHART_COLOR_REFERENCES[set[i].c];
+    if (!reference) continue;
+    const dr = r - reference[0];
+    const dg = g - reference[1];
+    const db = b - reference[2];
+    const distance = dr * dr + dg * dg + db * db;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = i;
+    }
+  }
+  return bestDistance <= 20 * 20 ? best : -1;
+}
+
+function nearestPrintedPaletteIndex(set, r, g, b) {
+  let best = -1;
+  let bestDistance = Infinity;
+  for (let i = 0; i < set.length; i++) {
+    const dr = r - set[i].r;
+    const dg = g - set[i].g;
+    const db = b - set[i].b;
+    const distance = dr * dr + dg * dg + db * db;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = i;
+    }
+  }
+  // 标准图纸底色允许少量导出偏色，但拒绝与当前色卡明显无关的色块。
+  return bestDistance <= 48 * 48 ? best : -1;
+}
 
 Page({
   data: {
@@ -15,6 +77,8 @@ Page({
     totalBeads: 0,
     colors: [],
     selectedIndex: -1,
+    selectedCode: '',
+    selectedCount: 0,
     paletteSize: 221, // 当前豆盘色数
     sizes: SIZES,     // 可选豆盘档位
     cols: 0,          // 校准页：横向豆数
@@ -52,17 +116,15 @@ Page({
 
   /** 初始化画布节点（可重复调用；成功后执行回调） */
   initCanvas(cb) {
-    if (this.ctx) {
-      cb && cb();
-      return;
-    }
     this.createSelectorQuery()
       .select('#board')
       .fields({ node: true, size: true, rect: true })
       .exec((res) => {
         if (!res || !res[0] || !res[0].node) return;
-        this.canvas = res[0].node;
-        this.ctx = this.canvas.getContext('2d');
+        if (this.canvas !== res[0].node || !this.ctx) {
+          this.canvas = res[0].node;
+          this.ctx = this.canvas.getContext('2d');
+        }
         this.dpr = (wx.getWindowInfo ? wx.getWindowInfo().pixelRatio : 2) || 2;
         this.boardW = res[0].width;
         this.boardH = res[0].height;
@@ -86,18 +148,25 @@ Page({
     });
   },
 
+  /** 等比限制解码尺寸，避免把原生图纸的小网格过早压没 */
+  scaledImageSize(width, height) {
+    const edge = Math.max(width, height);
+    if (edge <= MAX_SOURCE_EDGE) return { width, height };
+    const scale = MAX_SOURCE_EDGE / edge;
+    return {
+      width: Math.max(1, Math.round(width * scale)),
+      height: Math.max(1, Math.round(height * scale))
+    };
+  },
+
   loadImage(path) {
     wx.showLoading({ title: '解析图纸中' });
     wx.getImageInfo({
       src: path,
       success: (info) => {
-        let w = info.width;
-        let h = info.height;
-        if (Math.max(w, h) > MAX_GRID) {
-          const k = MAX_GRID / Math.max(w, h);
-          w = Math.round(w * k);
-          h = Math.round(h * k);
-        }
+        const size = this.scaledImageSize(info.width, info.height);
+        const w = size.width;
+        const h = size.height;
         const off = wx.createOffscreenCanvas({ type: '2d', width: w, height: h });
         const octx = off.getContext('2d');
         const img = off.createImage();
@@ -154,55 +223,98 @@ Page({
     const W = this.srcW;
     const H = this.srcH;
 
-    // 灰度（透明像素视为白）
-    const g = new Float32Array(W * H);
-    for (let p = 0; p < W * H; p++) {
-      const o = p * 4;
-      g[p] = data[o + 3] < 128
-        ? 255
-        : data[o] * 0.299 + data[o + 1] * 0.587 + data[o + 2] * 0.114;
-    }
+    // 直接从 RGBA 计算投影，不再额外分配 W×H 的灰度数组。
+    // 原图可以保留到 2048px，细网格不会因 800px 缩放而消失。
+    const luminance = (offset) => data[offset + 3] < 128
+      ? 255
+      : data[offset] * 0.299 + data[offset + 1] * 0.587 + data[offset + 2] * 0.114;
 
-    // 列边缘强度（隔行采样提速）
-    const colE = new Float32Array(W - 1);
-    for (let y = 0; y < H; y += 2) {
-      const base = y * W;
-      for (let x = 0; x < W - 1; x++) {
-        colE[x] += Math.abs(g[base + x] - g[base + x + 1]);
+    const columnProjection = (startY = 0, endY = H) => {
+      const projection = new Float32Array(W - 1);
+      for (let y = startY; y < endY; y += 2) {
+        const base = y * W * 4;
+        for (let x = 0; x < W - 1; x++) {
+          const offset = base + x * 4;
+          projection[x] += Math.min(32, Math.abs(luminance(offset) - luminance(offset + 4)));
+        }
       }
-    }
-    // 行边缘强度（隔列采样提速）
-    const rowE = new Float32Array(H - 1);
-    for (let x = 0; x < W; x += 2) {
-      for (let y = 0; y < H - 1; y++) {
-        rowE[y] += Math.abs(g[y * W + x] - g[(y + 1) * W + x]);
+      return projection;
+    };
+    const rowProjection = (startX = 0, endX = W) => {
+      const projection = new Float32Array(H - 1);
+      for (let x = startX; x < endX; x += 2) {
+        for (let y = 0; y < H - 1; y++) {
+          const offset = (y * W + x) * 4;
+          projection[y] += Math.min(32, Math.abs(luminance(offset) - luminance(offset + W * 4)));
+        }
       }
-    }
+      return projection;
+    };
 
-    const specX = this.analyzeProjection(colE, W);
-    const specY = this.analyzeProjection(rowE, H);
+    const fullColumns = columnProjection();
+    const fullRows = rowProjection();
+    const estimatedX = this.estimateProjectionPitch(fullColumns);
+    const estimatedY = this.estimateProjectionPitch(fullRows);
+    const estimatesAgree = estimatedX && estimatedY
+      && Math.abs(estimatedX - estimatedY) / Math.max(estimatedX, estimatedY) < 0.15;
+    const squarePitch = estimatesAgree ? (estimatedX + estimatedY) / 2 : null;
+
+    const coordinateChart = squarePitch
+      ? this.detectCoordinateChart(data, W, H, squarePitch, fullRows)
+      : null;
+    if (coordinateChart) return coordinateChart;
+
+    let specX = this.analyzeProjection(fullColumns, W, squarePitch || estimatedX);
+    let specY = this.analyzeProjection(fullRows, H, squarePitch || estimatedY);
+
+    // 第二遍只查看另一轴已确认的网格范围。这样底部图例、四周坐标和标题
+    // 即使边缘比网格更黑，也不会被合并进豆子矩阵。
+    if (specY) {
+      const startY = Math.max(0, Math.floor(specY.offset));
+      const endY = Math.min(H, Math.ceil(specY.offset + specY.pitch * specY.cells) + 1);
+      specX = this.analyzeProjection(
+        columnProjection(startY, endY),
+        W,
+        squarePitch || estimatedX
+      ) || specX;
+    }
+    if (specX) {
+      const startX = Math.max(0, Math.floor(specX.offset));
+      const endX = Math.min(W, Math.ceil(specX.offset + specX.pitch * specX.cells) + 1);
+      specY = this.analyzeProjection(
+        rowProjection(startX, endX),
+        H,
+        squarePitch || estimatedY
+      ) || specY;
+    }
 
     if (specX && specY) {
       return {
         det: true,
         pitchX: specX.pitch, offX: specX.offset, cols: specX.cells,
-        pitchY: specY.pitch, offY: specY.offset, rows: specY.cells
+        pitchY: specY.pitch, offY: specY.offset, rows: specY.cells,
+        endX: specX.offset + specX.pitch * specX.cells,
+        endY: specY.offset + specY.pitch * specY.cells
       };
     }
     if (specX) {
-      const rows = Math.max(2, Math.round(H / specX.pitch));
+      const rows = Math.min(MAX_CELLS, Math.max(2, Math.round(H / specX.pitch)));
       return {
         det: true,
         pitchX: specX.pitch, offX: specX.offset, cols: specX.cells,
-        pitchY: specX.pitch, offY: 0, rows
+        pitchY: specX.pitch, offY: 0, rows,
+        endX: specX.offset + specX.pitch * specX.cells,
+        endY: Math.min(H, specX.pitch * rows)
       };
     }
     if (specY) {
-      const cols = Math.max(2, Math.round(W / specY.pitch));
+      const cols = Math.min(MAX_CELLS, Math.max(2, Math.round(W / specY.pitch)));
       return {
         det: true,
         pitchX: specY.pitch, offX: 0, cols,
-        pitchY: specY.pitch, offY: specY.offset, rows: specY.cells
+        pitchY: specY.pitch, offY: specY.offset, rows: specY.cells,
+        endX: Math.min(W, specY.pitch * cols),
+        endY: specY.offset + specY.pitch * specY.cells
       };
     }
     // 检测失败：默认 50 宽、正方形格子铺满
@@ -211,40 +323,465 @@ Page({
     return {
       det: false,
       pitchX: W / cols, offX: 0, cols,
-      pitchY: H / rows, offY: 0, rows
+      pitchY: H / rows, offY: 0, rows,
+      endX: W, endY: H
     };
   },
 
-  /** 在投影数组中找周期尖峰，返回 { pitch, offset, cells } 或 null */
-  analyzeProjection(arr, len) {
+  /** 用归一化自相关估计基础格距，避免把格内文字的半周期当成网格。 */
+  estimateProjectionPitch(arr) {
+    if (arr.length < 12) return null;
+    let mean = 0;
+    for (let i = 0; i < arr.length; i++) mean += arr[i];
+    mean /= arr.length;
+
+    const maxLag = Math.min(120, Math.floor(arr.length / 4));
+    const correlations = new Float64Array(maxLag + 1);
+    let best = 0;
+    for (let lag = 3; lag <= maxLag; lag++) {
+      let product = 0;
+      let energyA = 0;
+      let energyB = 0;
+      for (let i = 0; i < arr.length - lag; i++) {
+        const a = arr[i] - mean;
+        const b = arr[i + lag] - mean;
+        product += a * b;
+        energyA += a * a;
+        energyB += b * b;
+      }
+      const correlation = energyA && energyB ? product / Math.sqrt(energyA * energyB) : 0;
+      correlations[lag] = correlation;
+      if (correlation > best) best = correlation;
+    }
+    if (best < 0.2) return null;
+
+    // 倍频通常更强；选择第一个达到主峰 65% 的局部峰作为基础格距。
+    const threshold = Math.max(0.2, best * 0.65);
+    for (let lag = 3; lag <= maxLag; lag++) {
+      if (correlations[lag] < threshold) continue;
+      if (correlations[lag] >= correlations[lag - 1]
+        && correlations[lag] >= correlations[lag + 1]) {
+        const left = correlations[lag - 1];
+        const center = correlations[lag];
+        const right = correlations[lag + 1];
+        const denominator = left - 2 * center + right;
+        const adjustment = denominator
+          ? 0.5 * (left - right) / denominator
+          : 0;
+        return lag + Math.max(-0.5, Math.min(0.5, adjustment));
+      }
+    }
+    return null;
+  },
+
+  /**
+   * 标准图纸四周带完整坐标栏。通过浅色背景 + 深色数字识别四条坐标栏，
+   * 返回坐标栏内部的真正豆子矩阵。
+   */
+  detectCoordinateChart(data, width, height, estimatedPitch, rowProjection) {
+    const totalCols = Math.round(width / estimatedPitch);
+    if (totalCols < 6 || totalCols > MAX_CELLS + 2) return null;
+    const pitch = width / totalCols;
+    if (Math.abs(pitch - estimatedPitch) / estimatedPitch > 0.06) return null;
+
+    // 标题可能位于网格上方。先在整张图的横向边缘投影中寻找网格周期相位，
+    // 再沿该相位寻找真正的顶部/底部坐标栏，而不是假设坐标栏从 y=0 开始。
+    let bestPhase = 0;
+    let bestPhaseScore = -1;
+    const phaseStep = Math.max(0.25, pitch / 160);
+    for (let phase = 0; phase < pitch; phase += phaseStep) {
+      let score = 0;
+      for (let y = phase; y < height - 1; y += pitch) {
+        const center = Math.round(y);
+        let strength = 0;
+        for (let delta = -1; delta <= 1; delta++) {
+          const index = center + delta;
+          if (index >= 0 && index < rowProjection.length) {
+            strength = Math.max(strength, rowProjection[index]);
+          }
+        }
+        score += Math.min(strength, 5000);
+      }
+      if (score > bestPhaseScore) {
+        bestPhaseScore = score;
+        bestPhase = phase;
+      }
+    }
+
+    const measureRow = (top) => {
+      let labels = 0;
+      let neutral = 0;
+      for (let col = 0; col < totalCols; col++) {
+        const cell = this.sampleCellAppearance(
+          data,
+          width,
+          height,
+          col * pitch,
+          top,
+          (col + 1) * pitch,
+          top + pitch
+        );
+        if (cell.hasLabel) labels++;
+        if (cell.luminance > 170 && cell.chroma < 35) neutral++;
+      }
+      return {
+        labelRate: labels / totalCols,
+        neutralRate: neutral / totalCols
+      };
+    };
+
+    const isAxisBand = (metric) => metric
+      && metric.labelRate >= 0.5
+      && metric.neutralRate >= 0.85;
+
+    // 旧格式的顶部坐标栏紧贴图片 y=0。外边界不一定会在边缘投影中形成峰，
+    // 因此它应优先于相位搜索结果，否则整张网格会被错误下移半格左右。
+    if (isAxisBand(measureRow(0))) bestPhase = 0;
+
+    const axisCandidates = [];
+    for (let step = 0; ; step++) {
+      const top = bestPhase + step * pitch;
+      if (top + pitch > height) break;
+      const metric = measureRow(top);
+      if (isAxisBand(metric)) axisCandidates.push({ step, top, metric });
+    }
+
+    const columnMetric = (col, topAxis, rows) => {
+      let labels = 0;
+      let neutral = 0;
+      for (let row = 1; row <= rows; row++) {
+        const cell = this.sampleCellAppearance(
+          data,
+          width,
+          height,
+          col * pitch,
+          topAxis + row * pitch,
+          (col + 1) * pitch,
+          topAxis + (row + 1) * pitch
+        );
+        if (cell.hasLabel) labels++;
+        if (cell.luminance > 170 && cell.chroma < 35) neutral++;
+      }
+      return {
+        labelRate: labels / rows,
+        neutralRate: neutral / rows
+      };
+    };
+
+    let bestPair = null;
+    for (let start = 0; start < axisCandidates.length; start++) {
+      const top = axisCandidates[start];
+      if (top.top > height * 0.45) continue;
+      for (let end = start + 1; end < axisCandidates.length; end++) {
+        const bottom = axisCandidates[end];
+        if (bottom.top < height * 0.5) continue;
+        const rows = bottom.step - top.step - 1;
+        if (rows < 2 || rows > MAX_CELLS) continue;
+
+        const left = columnMetric(0, top.top, rows);
+        const right = columnMetric(totalCols - 1, top.top, rows);
+        if (left.labelRate < 0.5 || right.labelRate < 0.5
+          || left.neutralRate < 0.85 || right.neutralRate < 0.85) {
+          continue;
+        }
+        const sideLabelRate = Math.min(left.labelRate, right.labelRate);
+        const score = sideLabelRate * 100 + Math.min(rows, 100) * 0.01;
+        if (!bestPair || score > bestPair.score) {
+          bestPair = { score, top: top.top, bottom: bottom.top, rows };
+        }
+      }
+    }
+    if (!bestPair) return null;
+
+    const cols = totalCols - 2;
+    return {
+      det: true,
+      coordinateChart: true,
+      pitchX: pitch,
+      offX: pitch,
+      cols,
+      pitchY: pitch,
+      offY: bestPair.top + pitch,
+      rows: bestPair.rows,
+      endX: pitch * (totalCols - 1),
+      endY: bestPair.bottom
+    };
+  },
+
+  /**
+   * 读取单格的底色和文字对比度。只把与底色亮度差明显的笔画像素视为文字；
+   * 透明图常见的浅灰棋盘格不会因此被误判。
+   */
+  sampleCellAppearance(data, width, height, left, top, right, bottom) {
+    const cellWidth = right - left;
+    const cellHeight = bottom - top;
+    const x0 = Math.max(0, Math.round(left + cellWidth * 0.12));
+    const x1 = Math.min(width - 1, Math.round(right - cellWidth * 0.12));
+    const y0 = Math.max(0, Math.round(top + cellHeight * 0.12));
+    const y1 = Math.min(height - 1, Math.round(bottom - cellHeight * 0.12));
+    const histogram = Object.create(null);
+    let bestKey = -1;
+    let bestCount = 0;
+    let sampleCount = 0;
+
+    for (let y = y0; y <= y1; y++) {
+      const base = y * width;
+      for (let x = x0; x <= x1; x++) {
+        const offset = (base + x) * 4;
+        if (data[offset + 3] < 128) continue;
+        sampleCount++;
+        const key = ((data[offset] >> 2) << 12)
+          | ((data[offset + 1] >> 2) << 6)
+          | (data[offset + 2] >> 2);
+        const count = (histogram[key] || 0) + 1;
+        histogram[key] = count;
+        if (count > bestCount) {
+          bestCount = count;
+          bestKey = key;
+        }
+      }
+    }
+
+    if (bestKey < 0) {
+      return {
+        r: 255, g: 255, b: 255,
+        luminance: 255, chroma: 0,
+        contrastRatio: 0, hasLabel: false
+      };
+    }
+
+    let sumR = 0;
+    let sumG = 0;
+    let sumB = 0;
+    let backgroundCount = 0;
+    for (let y = y0; y <= y1; y++) {
+      const base = y * width;
+      for (let x = x0; x <= x1; x++) {
+        const offset = (base + x) * 4;
+        const key = ((data[offset] >> 2) << 12)
+          | ((data[offset + 1] >> 2) << 6)
+          | (data[offset + 2] >> 2);
+        if (key !== bestKey) continue;
+        sumR += data[offset];
+        sumG += data[offset + 1];
+        sumB += data[offset + 2];
+        backgroundCount++;
+      }
+    }
+    const r = backgroundCount ? sumR / backgroundCount : 255;
+    const g = backgroundCount ? sumG / backgroundCount : 255;
+    const b = backgroundCount ? sumB / backgroundCount : 255;
+    const luminance = r * 0.299 + g * 0.587 + b * 0.114;
+    let mediumContrast = 0;
+    let strongContrast = 0;
+    let codeContrast = 0;
+    let codeInkChromaSum = 0;
+    let total = 0;
+    for (let y = y0; y <= y1; y++) {
+      const base = y * width;
+      for (let x = x0; x <= x1; x++) {
+        const offset = (base + x) * 4;
+        if (data[offset + 3] < 128) continue;
+        const pixelLuminance = data[offset] * 0.299
+          + data[offset + 1] * 0.587
+          + data[offset + 2] * 0.114;
+        const difference = Math.abs(pixelLuminance - luminance);
+        if (difference > TEXT_CONTRAST) mediumContrast++;
+        if (difference > 65) strongContrast++;
+        if (difference > 110) {
+          codeContrast++;
+          codeInkChromaSum += Math.max(
+            data[offset],
+            data[offset + 1],
+            data[offset + 2]
+          ) - Math.min(
+            data[offset],
+            data[offset + 1],
+            data[offset + 2]
+          );
+        }
+        total++;
+      }
+    }
+    const mediumContrastRatio = total ? mediumContrast / total : 0;
+    const contrastRatio = total ? strongContrast / total : 0;
+    const codeContrastRatio = total ? codeContrast / total : 0;
+    const codeInkChroma = codeContrast
+      ? codeInkChromaSum / codeContrast
+      : 0;
+    const hasLabel = mediumContrastRatio >= 0.06;
+    const lightNeutralCell = luminance > 225
+      && Math.max(r, g, b) - Math.min(r, g, b) < 10;
+    const plausibleCodeInk = codeContrastRatio <= 0.35
+      && (!lightNeutralCell
+        || (codeContrastRatio >= 0.03
+          && codeContrastRatio <= 0.25
+          && codeInkChroma < 40));
+
+    return {
+      r, g, b,
+      luminance,
+      chroma: Math.max(r, g, b) - Math.min(r, g, b),
+      contrastRatio,
+      codeContrastRatio,
+      codeInkChroma,
+      mediumContrastRatio,
+      backgroundRatio: sampleCount ? bestCount / sampleCount : 0,
+      hasLabel,
+      // 这是文字候选；process() 还会用当前色卡校验底色，二者同时通过才计数。
+      hasBeadCode: hasLabel && plausibleCodeInk
+    };
+  },
+
+  /**
+   * 在投影中寻找最长的连续周期峰列。
+   * 图例、坐标文字可以产生更强的孤立边缘，但不能组成长周期序列。
+   */
+  analyzeProjection(arr, len, preferredPitch = null) {
     let max = 0;
     for (let i = 0; i < arr.length; i++) if (arr[i] > max) max = arr[i];
     if (max <= 0) return null;
-    const th = max * 0.3;
+
+    const threshold = max * 0.12;
     const peaks = [];
     for (let i = 1; i < arr.length - 1; i++) {
-      if (arr[i] >= th && arr[i] >= arr[i - 1] && arr[i] >= arr[i + 1]) {
-        if (peaks.length && i - peaks[peaks.length - 1] < 3) continue;
-        peaks.push(i);
+      if (arr[i] < threshold || arr[i] < arr[i - 1] || arr[i] < arr[i + 1]) continue;
+      const previous = peaks[peaks.length - 1];
+      if (previous && i - previous.position < 3) {
+        if (arr[i] > previous.strength) {
+          previous.position = i;
+          previous.strength = arr[i];
+        }
+      } else {
+        peaks.push({ position: i, strength: arr[i] });
       }
     }
     if (peaks.length < 6) return null;
-    const pitch = (peaks[peaks.length - 1] - peaks[0]) / (peaks.length - 1);
-    const cells = peaks.length - 1;
-    if (pitch < 3 || pitch > len / 2 || cells < 4 || cells > 400) return null;
-    return { pitch, offset: peaks[0], cells };
+
+    const candidates = new Set();
+    const addCandidate = (pitch) => {
+      if (pitch < 3 || pitch > len / 2) return;
+      candidates.add(Math.round(pitch * 20) / 20);
+    };
+
+    if (preferredPitch) {
+      for (let pitch = preferredPitch - 1.5; pitch <= preferredPitch + 1.5; pitch += 0.05) {
+        addCandidate(pitch);
+      }
+    } else {
+      // 常见图纸缩放后的格距通常小于 80px，先覆盖连续候选。
+      for (let pitch = 3; pitch <= Math.min(80, len / 2); pitch += 0.25) {
+        addCandidate(pitch);
+      }
+      // 大格图纸和非整数缩放，从邻近峰差推导候选格距。
+      for (let i = 0; i < peaks.length; i++) {
+        const end = Math.min(peaks.length, i + 13);
+        for (let j = i + 1; j < end; j++) {
+          const distance = peaks[j].position - peaks[i].position;
+          addCandidate(distance / (j - i));
+          for (let steps = 1; steps <= 4; steps++) addCandidate(distance / steps);
+        }
+      }
+    }
+
+    function nearestPeak(expected, tolerance, startIndex) {
+      let best = null;
+      for (let i = startIndex; i < peaks.length; i++) {
+        const delta = peaks[i].position - expected;
+        if (delta > tolerance) break;
+        if (Math.abs(delta) <= tolerance && (!best || Math.abs(delta) < best.distance)) {
+          best = { index: i, distance: Math.abs(delta), peak: peaks[i] };
+        }
+      }
+      return best;
+    }
+
+    let best = null;
+    candidates.forEach((candidatePitch) => {
+      const tolerance = Math.max(1.5, candidatePitch * 0.2);
+      for (let start = 0; start < peaks.length; start++) {
+        const matched = [{ peak: peaks[start], step: 0 }];
+        let searchFrom = start + 1;
+        let missing = 0;
+        let consecutiveMissing = 0;
+        for (let step = 1; step <= MAX_CELLS; step++) {
+          const expected = peaks[start].position + candidatePitch * step;
+          if (expected >= len) break;
+          const found = nearestPeak(expected, tolerance, searchFrom);
+          if (!found) {
+            missing++;
+            consecutiveMissing++;
+            if (missing > 8 || consecutiveMissing > 1) break;
+            continue;
+          }
+          matched.push({ peak: found.peak, step });
+          searchFrom = found.index + 1;
+          consecutiveMissing = 0;
+        }
+        if (matched.length < 6) continue;
+
+        // 对匹配峰做线性回归，得到亚像素格距，并检查残差。
+        const count = matched.length;
+        let meanIndex = 0;
+        let meanPosition = 0;
+        for (const item of matched) {
+          meanIndex += item.step;
+          meanPosition += item.peak.position;
+        }
+        meanIndex /= count;
+        meanPosition /= count;
+        let numerator = 0;
+        let denominator = 0;
+        for (let i = 0; i < count; i++) {
+          const di = matched[i].step - meanIndex;
+          numerator += di * (matched[i].peak.position - meanPosition);
+          denominator += di * di;
+        }
+        const pitch = numerator / denominator;
+        const offset = meanPosition - pitch * meanIndex;
+        let squaredError = 0;
+        let strength = 0;
+        for (let i = 0; i < count; i++) {
+          const error = matched[i].peak.position - (offset + pitch * matched[i].step);
+          squaredError += error * error;
+          strength += matched[i].peak.strength / max;
+        }
+        const rms = Math.sqrt(squaredError / count);
+        if (rms > Math.max(1.25, pitch * 0.15)) continue;
+
+        const cells = matched[matched.length - 1].step;
+        const occupancy = count / (cells + 1);
+        const preferredPenalty = preferredPitch
+          ? Math.abs(candidatePitch - preferredPitch) * 500
+          : 0;
+        const score = cells * 100 + occupancy * 10 + strength / count
+          - rms - missing * 2 - preferredPenalty;
+        if (!best || score > best.score) {
+          best = { score, pitch, offset, cells };
+        }
+      }
+    });
+
+    if (!best || best.cells < 4 || best.cells > MAX_CELLS) return null;
+    return { pitch: best.pitch, offset: best.offset, cells: best.cells };
   },
 
   /** 校准页步进器 */
   onStep(e) {
     const k = e.currentTarget.dataset.k;
     const d = parseInt(e.currentTarget.dataset.d, 10);
-    const val = Math.min(400, Math.max(2, this.data[k] + d));
+    const val = Math.min(MAX_CELLS, Math.max(2, this.data[k] + d));
     this.setData({ [k]: val });
-    // 检测失败模式下：pitch 跟随豆数变化，网格铺满全图
-    if (this.gridSpec && !this.gridSpec.det) {
-      if (k === 'cols') this.gridSpec.pitchX = this.srcW / val;
-      if (k === 'rows') this.gridSpec.pitchY = this.srcH / val;
+    // 保持已识别的网格边界不动，在边界内按新豆数重新均分。
+    if (this.gridSpec) {
+      if (k === 'cols') {
+        const endX = this.gridSpec.endX == null ? this.srcW : this.gridSpec.endX;
+        this.gridSpec.pitchX = (endX - this.gridSpec.offX) / val;
+      }
+      if (k === 'rows') {
+        const endY = this.gridSpec.endY == null ? this.srcH : this.gridSpec.endY;
+        this.gridSpec.pitchY = (endY - this.gridSpec.offY) / val;
+      }
     }
     this.render();
   },
@@ -256,68 +793,29 @@ Page({
     const { data } = this.imageData;
     const W = this.srcW;
     const H = this.srcH;
-    const half = Math.max(1, Math.round(Math.min(pitchX, pitchY) * 0.18));
     const out = new Uint8ClampedArray(cols * rows * 4);
 
     for (let r = 0; r < rows; r++) {
-      const cy = offY + (r + 0.5) * pitchY;
       for (let c = 0; c < cols; c++) {
-        const cx = offX + (c + 0.5) * pitchX;
-        // ---- 1) 中心 patch 取主色（5bit 量化众数） ----
-        const hist = {};
-        let best = -1;
-        let bestN = 0;
-        const x0 = Math.max(0, Math.round(cx - half));
-        const x1 = Math.min(W - 1, Math.round(cx + half));
-        const y0 = Math.max(0, Math.round(cy - half));
-        const y1 = Math.min(H - 1, Math.round(cy + half));
-        for (let yy = y0; yy <= y1; yy++) {
-          const base = yy * W;
-          for (let xx = x0; xx <= x1; xx++) {
-            const o = (base + xx) * 4;
-            if (data[o + 3] < 128) continue;
-            const q = ((data[o] >> 3) << 10) | ((data[o + 1] >> 3) << 5) | (data[o + 2] >> 3);
-            const n = (hist[q] || 0) + 1;
-            hist[q] = n;
-            if (n > bestN) { bestN = n; best = q; }
-          }
-        }
+        const cell = this.sampleCellAppearance(
+          data,
+          W,
+          H,
+          offX + c * pitchX,
+          offY + r * pitchY,
+          offX + (c + 1) * pitchX,
+          offY + (r + 1) * pitchY
+        );
         const o = (r * cols + c) * 4;
-        if (best < 0) {
+        if (!cell.hasBeadCode) {
           out[o + 3] = 0;
           continue;
         }
-        const R = (((best >> 10) & 31) << 3) | 4;
-        const G = (((best >> 5) & 31) << 3) | 4;
-        const B = ((best & 31) << 3) | 4;
 
-        // ---- 2) 近白色格：靠"格内是否印有深色色号文字"区分白豆与空白 ----
-        if (R > EMPTY_TH && G > EMPTY_TH && B > EMPTY_TH) {
-          // 扫描格内 15%~85% 区域的深色像素（文字墨迹）
-          const ix0 = Math.max(0, Math.round(offX + (c + 0.15) * pitchX));
-          const ix1 = Math.min(W - 1, Math.round(offX + (c + 0.85) * pitchX));
-          const iy0 = Math.max(0, Math.round(offY + (r + 0.15) * pitchY));
-          const iy1 = Math.min(H - 1, Math.round(offY + (r + 0.85) * pitchY));
-          let ink = 0;
-          let total = 0;
-          for (let yy = iy0; yy <= iy1; yy++) {
-            const base = yy * W;
-            for (let xx = ix0; xx <= ix1; xx++) {
-              const oo = (base + xx) * 4;
-              if (data[oo + 3] < 128) continue;
-              total++;
-              const lum = data[oo] * 0.299 + data[oo + 1] * 0.587 + data[oo + 2] * 0.114;
-              if (lum < 150) ink++;
-            }
-          }
-          const inkRatio = total > 0 ? ink / total : 0;
-          if (inkRatio < 0.01) {
-            out[o + 3] = 0; // 无文字 -> 空白格
-            continue;
-          }
-        }
-
-        out[o] = R; out[o + 1] = G; out[o + 2] = B; out[o + 3] = 255;
+        out[o] = Math.round(cell.r);
+        out[o + 1] = Math.round(cell.g);
+        out[o + 2] = Math.round(cell.b);
+        out[o + 3] = 255;
       }
     }
 
@@ -329,8 +827,9 @@ Page({
   /* ================= 色号映射与位图 ================= */
 
   /**
-   * 采样矩阵 -> Mard 色号映射
-   * 每颗豆在当前豆盘中找 Lab 色差最小的色号，统计各色号豆数
+   * 采样矩阵 -> Mard 色号映射。
+   * 数量完全由主体网格中带编号的格子逐格生成，不读取、也不依赖图片底部图例。
+   * 每颗豆在当前豆盘中找最接近的印刷色号，再按识别结果统计各色号豆数。
    */
   process() {
     const t0 = Date.now();
@@ -350,7 +849,14 @@ Page({
       const q = ((raw[i] >> 2) << 12) | ((raw[i + 1] >> 2) << 6) | (raw[i + 2] >> 2);
       let idx = cache.get(q);
       if (idx === undefined) {
-        idx = nearestIndex(size, raw[i], raw[i + 1], raw[i + 2]);
+        idx = this.gridSpec && this.gridSpec.coordinateChart
+          ? nearestChartIndex(set, raw[i], raw[i + 1], raw[i + 2])
+          : -1;
+        if (idx < 0) idx = nearestPrintedPaletteIndex(set, raw[i], raw[i + 1], raw[i + 2]);
+        if (idx < 0) {
+          gridRaw[p] = -1;
+          continue;
+        }
         cache.set(q, idx);
       }
       gridRaw[p] = idx;
@@ -386,7 +892,9 @@ Page({
       stage: 'ready',
       colors: used,
       totalBeads,
-      selectedIndex: -1
+      selectedIndex: -1,
+      selectedCode: '',
+      selectedCount: 0
     }, () => {
       this.initCanvas(() => {
         this.fitView();
@@ -460,8 +968,9 @@ Page({
 
   fitView() {
     const isAdjust = this.data.stage === 'adjust';
-    const w = isAdjust ? this.srcW : this.data.gridW;
-    const h = isAdjust ? this.srcH : this.data.gridH;
+    const coordinatePadding = !isAdjust && this.gridSpec && this.gridSpec.coordinateChart ? 2 : 0;
+    const w = isAdjust ? this.srcW : this.data.gridW + coordinatePadding;
+    const h = isAdjust ? this.srcH : this.data.gridH + coordinatePadding;
     if (!w || !h || !this.boardW) return;
     const scale = Math.min(
       this.boardW / (w * BASE_CELL),
@@ -548,6 +1057,11 @@ Page({
     const h = this.data.gridH;
     const sel = this.data.selectedIndex;
 
+    if (this.gridSpec && this.gridSpec.coordinateChart) {
+      this.renderCoordinateChart(cell, x, y, sel);
+      return;
+    }
+
     if (cell < CELL_DETAIL_MIN) {
       ctx.imageSmoothingEnabled = false;
       const dw = w * cell;
@@ -591,6 +1105,123 @@ Page({
     }
 
     this.renderGridOverlay(cell, x, y, x0, y0, x1, y1, sel);
+  },
+
+  /** 标准图纸矢量重绘：方格、色号文字、四边完整行列坐标。 */
+  renderCoordinateChart(cell, x, y, sel) {
+    const ctx = this.ctx;
+    const dark = this.data.theme === 'dark';
+    const w = this.data.gridW;
+    const h = this.data.gridH;
+    const totalW = w + 2;
+    const totalH = h + 2;
+    const dataX = x + cell;
+    const dataY = y + cell;
+    const lineColor = dark ? 'rgba(255,255,255,0.20)' : 'rgba(20,30,45,0.20)';
+    const majorColor = dark ? 'rgba(255,174,104,0.55)' : 'rgba(224,132,61,0.48)';
+    const headerFill = dark ? '#252b36' : '#eef6ff';
+    const emptyA = dark ? '#20202a' : '#fafafa';
+    const emptyB = dark ? '#252530' : '#f0f0f0';
+    const dimFill = dark ? '#343440' : '#e5e5ea';
+
+    ctx.fillStyle = headerFill;
+    ctx.fillRect(x + cell, y, w * cell, cell);
+    ctx.fillRect(x + cell, y + (h + 1) * cell, w * cell, cell);
+    ctx.fillRect(x, y + cell, cell, h * cell);
+    ctx.fillRect(x + (w + 1) * cell, y + cell, cell, h * cell);
+
+    const x0 = Math.max(0, Math.floor((0 - dataX) / cell));
+    const y0 = Math.max(0, Math.floor((0 - dataY) / cell));
+    const x1 = Math.min(w - 1, Math.ceil((this.boardW - dataX) / cell));
+    const y1 = Math.min(h - 1, Math.ceil((this.boardH - dataY) / cell));
+    const checkSize = cell / 4;
+
+    for (let row = y0; row <= y1; row++) {
+      const py = dataY + row * cell;
+      const rowBase = row * w;
+      for (let col = x0; col <= x1; col++) {
+        const px = dataX + col * cell;
+        const colorIndex = this.grid[rowBase + col];
+        if (colorIndex < 0) {
+          ctx.fillStyle = emptyA;
+          ctx.fillRect(px, py, cell, cell);
+          if (cell >= 7) {
+            ctx.fillStyle = emptyB;
+            for (let cy = 0; cy < 4; cy++) {
+              for (let cx = 0; cx < 4; cx++) {
+                if ((cx + cy) % 2 === 0) {
+                  ctx.fillRect(px + cx * checkSize, py + cy * checkSize, checkSize, checkSize);
+                }
+              }
+            }
+          }
+          continue;
+        }
+
+        const color = this.palette[colorIndex];
+        const dimmed = sel >= 0 && colorIndex !== sel;
+        ctx.fillStyle = dimmed ? dimFill : color.hex;
+        ctx.fillRect(px, py, cell, cell);
+
+        if (!dimmed) {
+          const luminance = color.r * 0.299 + color.g * 0.587 + color.b * 0.114;
+          ctx.fillStyle = luminance > 155 ? '#17171c' : '#ffffff';
+          ctx.font = `600 ${Math.max(4, Math.floor(cell * 0.34))}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(color.code, px + cell / 2, py + cell / 2, cell * 0.9);
+        }
+      }
+    }
+
+    // 每格细线。
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let col = 0; col <= totalW; col++) {
+      const px = x + col * cell;
+      ctx.moveTo(px, y);
+      ctx.lineTo(px, y + totalH * cell);
+    }
+    for (let row = 0; row <= totalH; row++) {
+      const py = y + row * cell;
+      ctx.moveTo(x, py);
+      ctx.lineTo(x + totalW * cell, py);
+    }
+    ctx.stroke();
+
+    // 原图每 8 格一条强调线。
+    ctx.strokeStyle = majorColor;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let col = 8; col < w; col += 8) {
+      const px = dataX + col * cell;
+      ctx.moveTo(px, dataY);
+      ctx.lineTo(px, dataY + h * cell);
+    }
+    for (let row = 8; row < h; row += 8) {
+      const py = dataY + row * cell;
+      ctx.moveTo(dataX, py);
+      ctx.lineTo(dataX + w * cell, py);
+    }
+    ctx.stroke();
+
+    if (cell >= 6) {
+      ctx.fillStyle = dark ? '#f4f6fb' : '#111318';
+      ctx.font = `600 ${Math.max(5, Math.floor(cell * 0.42))}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (let col = 0; col < w; col++) {
+        const px = dataX + (col + 0.5) * cell;
+        ctx.fillText(String(col + 1), px, y + cell / 2);
+        ctx.fillText(String(col + 1), px, y + (h + 1.5) * cell);
+      }
+      for (let row = 0; row < h; row++) {
+        const py = dataY + (row + 0.5) * cell;
+        ctx.fillText(String(row + 1), x + cell / 2, py);
+        ctx.fillText(String(row + 1), x + (w + 1.5) * cell, py);
+      }
+    }
   },
 
   /**
@@ -685,7 +1316,13 @@ Page({
   /* ================= 手势 ================= */
 
   localTouch(t) {
-    return { x: t.x - (this.boardLeft || 0), y: t.y - (this.boardTop || 0) };
+    if (Number.isFinite(t.x) && Number.isFinite(t.y)) {
+      return { x: t.x, y: t.y };
+    }
+    return {
+      x: t.clientX - (this.boardLeft || 0),
+      y: t.clientY - (this.boardTop || 0)
+    };
   },
 
   onTouchStart(e) {
@@ -765,8 +1402,9 @@ Page({
   pickColorAt(px, py) {
     if (!this.grid) return;
     const cell = BASE_CELL * this.view.scale;
-    const gx = Math.floor((px - this.view.x) / cell);
-    const gy = Math.floor((py - this.view.y) / cell);
+    const coordinateOffset = this.gridSpec && this.gridSpec.coordinateChart ? 1 : 0;
+    const gx = Math.floor((px - this.view.x) / cell) - coordinateOffset;
+    const gy = Math.floor((py - this.view.y) / cell) - coordinateOffset;
     if (gx < 0 || gy < 0 || gx >= this.data.gridW || gy >= this.data.gridH) return;
     const ci = this.grid[gy * this.data.gridW + gx];
     if (ci < 0) return;
@@ -777,7 +1415,12 @@ Page({
 
   applySelection(index) {
     if (index >= 0) this.buildIsoCanvas(index);
-    this.setData({ selectedIndex: index });
+    const selected = index >= 0 ? this.palette[index] : null;
+    this.setData({
+      selectedIndex: index,
+      selectedCode: selected ? selected.code : '',
+      selectedCount: selected ? selected.count : 0
+    });
     this.render();
   },
 

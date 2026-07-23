@@ -5,7 +5,7 @@
     <view class="empty-card">
       <view class="empty-icon">🧩</view>
       <view class="empty-title">上传拼豆图纸</view>
-      <view class="empty-desc">选择一张带网格的拼豆图纸{"\n"}自动识别豆数，点选颜色只高亮它</view>
+      <view class="empty-desc">选择一张带网格的拼豆图纸{{'\n'}}自动识别豆数，点选颜色只高亮它</view>
       <view class="btn-primary">选择图片</view>
     </view>
     <view class="empty-tip">单指拖动 · 双指缩放 · 点按格子选色</view>
@@ -54,7 +54,7 @@
     <!-- 颜色面板 -->
     <view class="panel" wx:else>
       <view class="panel-header">
-        <text class="panel-title">{{selectedIndex >= 0 ? '只显示选中颜色 · 点图纸格子可切换' : '点击颜色，只显示它'}}</text>
+        <text class="panel-title">{{selectedIndex >= 0 ? '只显示 ' + selectedCode + ' · ' + selectedCount + ' 豆' : '点击色号，只显示它'}}</text>
         <text wx:if="{{selectedIndex >= 0}}" class="panel-clear" bindtap="clearSelect">显示全部</text>
       </view>
 
