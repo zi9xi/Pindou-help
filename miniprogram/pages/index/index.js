@@ -263,7 +263,7 @@ Page({
       const cy = offY + (r + 0.5) * pitchY;
       for (let c = 0; c < cols; c++) {
         const cx = offX + (c + 0.5) * pitchX;
-        // 中心 patch 取主色（量化到 5bit/通道 统计众数）
+        // ---- 1) 中心 patch 取主色（5bit 量化众数） ----
         const hist = {};
         let best = -1;
         let bestN = 0;
@@ -284,17 +284,40 @@ Page({
         }
         const o = (r * cols + c) * 4;
         if (best < 0) {
-          out[o + 3] = 0; // 全透明 -> 视为空
+          out[o + 3] = 0;
           continue;
         }
         const R = (((best >> 10) & 31) << 3) | 4;
         const G = (((best >> 5) & 31) << 3) | 4;
         const B = ((best & 31) << 3) | 4;
+
+        // ---- 2) 近白色格：靠"格内是否印有深色色号文字"区分白豆与空白 ----
         if (R > EMPTY_TH && G > EMPTY_TH && B > EMPTY_TH) {
-          out[o + 3] = 0; // 近白 -> 空白格
-        } else {
-          out[o] = R; out[o + 1] = G; out[o + 2] = B; out[o + 3] = 255;
+          // 扫描格内 15%~85% 区域的深色像素（文字墨迹）
+          const ix0 = Math.max(0, Math.round(offX + (c + 0.15) * pitchX));
+          const ix1 = Math.min(W - 1, Math.round(offX + (c + 0.85) * pitchX));
+          const iy0 = Math.max(0, Math.round(offY + (r + 0.15) * pitchY));
+          const iy1 = Math.min(H - 1, Math.round(offY + (r + 0.85) * pitchY));
+          let ink = 0;
+          let total = 0;
+          for (let yy = iy0; yy <= iy1; yy++) {
+            const base = yy * W;
+            for (let xx = ix0; xx <= ix1; xx++) {
+              const oo = (base + xx) * 4;
+              if (data[oo + 3] < 128) continue;
+              total++;
+              const lum = data[oo] * 0.299 + data[oo + 1] * 0.587 + data[oo + 2] * 0.114;
+              if (lum < 150) ink++;
+            }
+          }
+          const inkRatio = total > 0 ? ink / total : 0;
+          if (inkRatio < 0.01) {
+            out[o + 3] = 0; // 无文字 -> 空白格
+            continue;
+          }
         }
+
+        out[o] = R; out[o + 1] = G; out[o + 2] = B; out[o + 3] = 255;
       }
     }
 
