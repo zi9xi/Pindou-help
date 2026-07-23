@@ -1,9 +1,10 @@
-const { LAB_SETS, SIZES, nearestIndex, rgbToLab } = require('../../utils/palette');
+const { LAB_SETS, SIZES, nearestIndex } = require('../../utils/palette');
 
 const BASE_CELL = 12;       // 1 倍缩放时每个豆格的尺寸（px）
 const MAX_GRID = 800;       // 源图最大边长（像素，仅用于读像素，不是豆数）
 const CIRCLE_MIN = 9;       // 格子 >= 该 px 时画圆形豆
 const CELL_DETAIL_MIN = 4;  // 格子 < 该 px 时走离屏位图渲染
+const EMPTY_TH = 245;       // 采样色三通道均高于此值视为空白格
 
 Page({
   data: {
@@ -228,39 +229,10 @@ Page({
       }
     }
     if (peaks.length < 6) return null;
-
-    // 图例/坐标轴等区域会产生间距异常的峰：
-    // 以间距中位数为基准，切分"等距连续段"，取跨度最长的一段作为主网格
-    const sp = [];
-    for (let i = 1; i < peaks.length; i++) sp.push(peaks[i] - peaks[i - 1]);
-    sp.sort((a, b) => a - b);
-    const med = sp[Math.floor(sp.length / 2)];
-    if (med <= 0) return null;
-
-    let bestStart = 0;
-    let bestSpan = 0;
-    let bestCount = 0;
-    let start = 0;
-    for (let i = 1; i <= peaks.length; i++) {
-      const gap = i < peaks.length ? peaks[i] - peaks[i - 1] : Infinity;
-      if (gap > med * 1.6) {
-        const span = peaks[i - 1] - peaks[start];
-        if (span > bestSpan) {
-          bestSpan = span;
-          bestStart = start;
-          bestCount = i - start;
-        }
-        start = i;
-      }
-    }
-    if (bestCount < 5) return null;
-
-    const first = peaks[bestStart];
-    const last = peaks[bestStart + bestCount - 1];
-    const pitch = (last - first) / (bestCount - 1);
-    const cells = bestCount - 1;
+    const pitch = (peaks[peaks.length - 1] - peaks[0]) / (peaks.length - 1);
+    const cells = peaks.length - 1;
     if (pitch < 3 || pitch > len / 2 || cells < 4 || cells > 400) return null;
-    return { pitch, offset: first, cells };
+    return { pitch, offset: peaks[0], cells };
   },
 
   /** 校准页步进器 */
@@ -277,7 +249,7 @@ Page({
     this.render();
   },
 
-  /** 确认网格 -> 采样重建豆子矩阵（两遍：先取色，再按背景剔除空白） */
+  /** 确认网格 -> 采样重建豆子矩阵 */
   confirmGrid() {
     const { cols, rows } = this.data;
     const { pitchX, pitchY, offX, offY } = this.gridSpec;
@@ -285,17 +257,13 @@ Page({
     const W = this.srcW;
     const H = this.srcH;
     const half = Math.max(1, Math.round(Math.min(pitchX, pitchY) * 0.18));
-    const cellCount = cols * rows;
-    // 每格主色，R=-1 表示无效
-    const R = new Int16Array(cellCount);
-    const G = new Int16Array(cellCount);
-    const B = new Int16Array(cellCount);
+    const out = new Uint8ClampedArray(cols * rows * 4);
 
-    // ---- 第一遍：中心 patch 众数取色 ----
     for (let r = 0; r < rows; r++) {
       const cy = offY + (r + 0.5) * pitchY;
       for (let c = 0; c < cols; c++) {
         const cx = offX + (c + 0.5) * pitchX;
+        // ---- 1) 中心 patch 取主色（5bit 量化众数） ----
         const hist = {};
         let best = -1;
         let bestN = 0;
@@ -314,75 +282,42 @@ Page({
             if (n > bestN) { bestN = n; best = q; }
           }
         }
-        const p = r * cols + c;
+        const o = (r * cols + c) * 4;
         if (best < 0) {
-          R[p] = -1;
-        } else {
-          R[p] = (((best >> 10) & 31) << 3) | 4;
-          G[p] = (((best >> 5) & 31) << 3) | 4;
-          B[p] = ((best & 31) << 3) | 4;
+          out[o + 3] = 0;
+          continue;
         }
-      }
-    }
+        const R = (((best >> 10) & 31) << 3) | 4;
+        const G = (((best >> 5) & 31) << 3) | 4;
+        const B = ((best & 31) << 3) | 4;
 
-    // ---- 背景色：外圈格的众数（图纸底色通常铺满四周边界） ----
-    const bgHist = {};
-    let bgBest = -1;
-    let bgBestN = 0;
-    for (let p = 0; p < cellCount; p++) {
-      const r = Math.floor(p / cols);
-      const c = p % cols;
-      if (r !== 0 && r !== rows - 1 && c !== 0 && c !== cols - 1) continue;
-      if (R[p] < 0) continue;
-      const q = ((R[p] >> 3) << 10) | ((G[p] >> 3) << 5) | (B[p] >> 3);
-      const n = (bgHist[q] || 0) + 1;
-      bgHist[q] = n;
-      if (n > bgBestN) { bgBestN = n; bgBest = q; }
-    }
-    let bgLab = null;
-    if (bgBest >= 0) {
-      bgLab = rgbToLab(
-        (((bgBest >> 10) & 31) << 3) | 4,
-        (((bgBest >> 5) & 31) << 3) | 4,
-        ((bgBest & 31) << 3) | 4
-      );
-    }
-
-    // ---- 第二遍：与背景 Lab 色差 < 15 且无文字墨迹 -> 空白 ----
-    const out = new Uint8ClampedArray(cellCount * 4);
-    const BG_TH2 = 15 * 15;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const p = r * cols + c;
-        const o = p * 4;
-        if (R[p] < 0) continue; // alpha 0
-        if (bgLab) {
-          const lab = rgbToLab(R[p], G[p], B[p]);
-          const dL = lab[0] - bgLab[0];
-          const da = lab[1] - bgLab[1];
-          const db = lab[2] - bgLab[2];
-          if (dL * dL + da * da + db * db < BG_TH2) {
-            // 接近底色：格内有深色色号文字 -> 白豆保留，否则空白
-            const ix0 = Math.max(0, Math.round(offX + (c + 0.15) * pitchX));
-            const ix1 = Math.min(W - 1, Math.round(offX + (c + 0.85) * pitchX));
-            const iy0 = Math.max(0, Math.round(offY + (r + 0.15) * pitchY));
-            const iy1 = Math.min(H - 1, Math.round(offY + (r + 0.85) * pitchY));
-            let ink = 0;
-            let total = 0;
-            for (let yy = iy0; yy <= iy1; yy++) {
-              const base = yy * W;
-              for (let xx = ix0; xx <= ix1; xx++) {
-                const oo = (base + xx) * 4;
-                if (data[oo + 3] < 128) continue;
-                total++;
-                const lum = data[oo] * 0.299 + data[oo + 1] * 0.587 + data[oo + 2] * 0.114;
-                if (lum < 150) ink++;
-              }
+        // ---- 2) 近白色格：靠"格内是否印有深色色号文字"区分白豆与空白 ----
+        if (R > EMPTY_TH && G > EMPTY_TH && B > EMPTY_TH) {
+          // 扫描格内 15%~85% 区域的深色像素（文字墨迹）
+          const ix0 = Math.max(0, Math.round(offX + (c + 0.15) * pitchX));
+          const ix1 = Math.min(W - 1, Math.round(offX + (c + 0.85) * pitchX));
+          const iy0 = Math.max(0, Math.round(offY + (r + 0.15) * pitchY));
+          const iy1 = Math.min(H - 1, Math.round(offY + (r + 0.85) * pitchY));
+          let ink = 0;
+          let total = 0;
+          for (let yy = iy0; yy <= iy1; yy++) {
+            const base = yy * W;
+            for (let xx = ix0; xx <= ix1; xx++) {
+              const oo = (base + xx) * 4;
+              if (data[oo + 3] < 128) continue;
+              total++;
+              const lum = data[oo] * 0.299 + data[oo + 1] * 0.587 + data[oo + 2] * 0.114;
+              if (lum < 150) ink++;
             }
-            if (total === 0 || ink / total < 0.01) continue; // 空白
+          }
+          const inkRatio = total > 0 ? ink / total : 0;
+          if (inkRatio < 0.01) {
+            out[o + 3] = 0; // 无文字 -> 空白格
+            continue;
           }
         }
-        out[o] = R[p]; out[o + 1] = G[p]; out[o + 2] = B[p]; out[o + 3] = 255;
+
+        out[o] = R; out[o + 1] = G; out[o + 2] = B; out[o + 3] = 255;
       }
     }
 

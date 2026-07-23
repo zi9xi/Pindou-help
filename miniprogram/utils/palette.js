@@ -71,4 +71,4 @@ function nearestIndex(size, r, g, b) {
   return best;
 }
 
-module.exports = { SETS, SIZES, LAB_SETS, nearestIndex, rgbToLab };
+module.exports = { SETS, SIZES, LAB_SETS, nearestIndex };
