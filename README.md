@@ -75,12 +75,6 @@
         └── palette.js        # Mard 八档套装色号 + Lab 色差匹配
 ```
 
-## 本地运行
-
-1. 安装[微信开发者工具](https://developers.weixin.qq.com/miniprogram/dev/devtools/download.html)
-2. 导入本仓库根目录，AppID 选「测试号」
-3. 编译运行，上传一张拼豆图纸即可体验
-
 ## 路线图
 
 - [x] 图纸上传 + 网格自动识别 + 手动校准
