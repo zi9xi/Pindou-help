@@ -1,4 +1,4 @@
-const { buildPalette } = require('../../utils/color');
+const { LAB_SETS, SIZES, nearestIndex } = require('../../utils/palette');
 
 const BASE_CELL = 12;       // 1 倍缩放时每个豆格的尺寸（px）
 const MAX_GRID = 800;       // 源图最大边长（像素，仅用于读像素，不是豆数）
@@ -15,13 +15,17 @@ Page({
     totalBeads: 0,
     colors: [],
     selectedIndex: -1,
-    tolerance: 12,
+    paletteSize: 221, // 当前豆盘色数
+    sizes: SIZES,     // 可选豆盘档位
     cols: 0,          // 校准页：横向豆数
     rows: 0           // 校准页：纵向豆数
   },
 
   onLoad() {
-    this.setData({ theme: wx.getStorageSync('theme') || 'dark' });
+    this.setData({
+      theme: wx.getStorageSync('theme') || 'dark',
+      paletteSize: wx.getStorageSync('paletteSize') || 221
+    });
     // ===== 内部状态（不进 setData） =====
     this.imageData = null;      // 源图 ImageData
     this.srcW = 0;
@@ -299,18 +303,65 @@ Page({
     this.process();
   },
 
-  /* ================= 调色板与位图 ================= */
+  /* ================= 色号映射与位图 ================= */
 
+  /**
+   * 采样矩阵 -> Mard 色号映射
+   * 每颗豆在当前豆盘中找 Lab 色差最小的色号，统计各色号豆数
+   */
   process() {
     const t0 = Date.now();
-    const { palette, grid, totalBeads } = buildPalette(this.beadImageData.data, this.data.tolerance);
-    console.log(`[bead] palette built: ${palette.length} colors in ${Date.now() - t0}ms`);
-    this.palette = palette;
+    const raw = this.beadImageData.data;
+    const size = this.data.paletteSize;
+    const set = LAB_SETS[size] || LAB_SETS[221];
+    const pixelCount = raw.length / 4;
+    const gridRaw = new Int32Array(pixelCount);
+    const counts = new Map(); // 套装下标 -> 豆数
+    const cache = new Map();  // 6bit 量化色 -> 套装下标（加速）
+
+    for (let i = 0, p = 0; i < raw.length; i += 4, p++) {
+      if (raw[i + 3] < 128) {
+        gridRaw[p] = -1;
+        continue;
+      }
+      const q = ((raw[i] >> 2) << 12) | ((raw[i + 1] >> 2) << 6) | (raw[i + 2] >> 2);
+      let idx = cache.get(q);
+      if (idx === undefined) {
+        idx = nearestIndex(size, raw[i], raw[i + 1], raw[i + 2]);
+        cache.set(q, idx);
+      }
+      gridRaw[p] = idx;
+      counts.set(idx, (counts.get(idx) || 0) + 1);
+    }
+
+    // 使用到的色号，按豆数降序
+    const used = [];
+    counts.forEach((count, idx) => {
+      const c = set[idx];
+      used.push({ code: c.c, hex: c.h, r: c.r, g: c.g, b: c.b, count, setIdx: idx });
+    });
+    used.sort((a, b) => b.count - a.count);
+    const remap = new Map();
+    used.forEach((c, i) => remap.set(c.setIdx, i));
+
+    const grid = new Int32Array(pixelCount);
+    let totalBeads = 0;
+    for (let p = 0; p < pixelCount; p++) {
+      if (gridRaw[p] < 0) {
+        grid[p] = -1;
+      } else {
+        grid[p] = remap.get(gridRaw[p]);
+        totalBeads++;
+      }
+    }
+
+    console.log(`[bead] mapped to ${used.length} codes (${size}-set) in ${Date.now() - t0}ms`);
+    this.palette = used;
     this.grid = grid;
     this.buildPatternCanvases();
     this.setData({
       stage: 'ready',
-      colors: palette,
+      colors: used,
       totalBeads,
       selectedIndex: -1
     }, () => {
@@ -321,8 +372,12 @@ Page({
     });
   },
 
-  onToleranceChange(e) {
-    this.setData({ tolerance: e.detail.value });
+  /** 切换豆盘档位 */
+  onSizeTap(e) {
+    const paletteSize = parseInt(e.currentTarget.dataset.size, 10);
+    if (paletteSize === this.data.paletteSize) return;
+    this.setData({ paletteSize });
+    wx.setStorageSync('paletteSize', paletteSize);
     if (this.beadImageData) this.process();
   },
 

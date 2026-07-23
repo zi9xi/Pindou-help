@@ -15,7 +15,7 @@
   <block wx:else>
     <view class="topbar">
       <view class="topbar-btn" bindtap="chooseImage">换图</view>
-      <view class="topbar-info">{{stage === 'adjust' ? '对齐图纸网格后点确定' : gridW + '×' + gridH + ' · ' + colors.length + '色 · 共' + totalBeads + '豆'}}</view>
+      <view class="topbar-info">{{stage === 'adjust' ? '对齐图纸网格后点确定' : gridW + '×' + gridH + ' · ' + paletteSize + '色盘 · 共' + totalBeads + '豆'}}</view>
       <view class="topbar-btn" bindtap="toggleTheme">{{theme === 'dark' ? '☀️' : '🌙'}}</view>
     </view>
 
@@ -61,29 +61,28 @@
       <scroll-view scroll-x enhanced show-scrollbar="{{false}}" class="chips">
         <view
           wx:for="{{colors}}"
-          wx:key="key"
+          wx:key="code"
           class="chip {{selectedIndex === index ? 'chip-active' : ''}}"
           data-index="{{index}}"
           bindtap="onChipTap"
         >
           <view class="chip-color" style="background: {{item.hex}};"></view>
+          <text class="chip-code">{{item.code}}</text>
           <text class="chip-count">{{item.count}}</text>
         </view>
       </scroll-view>
 
-      <view class="tolerance-row">
-        <text class="tolerance-label">颜色合并</text>
-        <slider
-          class="tolerance-slider"
-          min="0"
-          max="50"
-          value="{{tolerance}}"
-          activeColor="#7c6cff"
-          backgroundColor="{{theme === 'dark' ? '#2c2c3e' : '#e2e2ec'}}"
-          block-size="18"
-          bindchange="onToleranceChange"
-        />
-        <text class="tolerance-value">{{tolerance}}</text>
+      <view class="size-row">
+        <text class="size-label">豆盘</text>
+        <scroll-view scroll-x enhanced show-scrollbar="{{false}}" class="sizes">
+          <view
+            wx:for="{{sizes}}"
+            wx:key="*this"
+            class="size-chip {{paletteSize === item ? 'size-active' : ''}}"
+            data-size="{{item}}"
+            bindtap="onSizeTap"
+          >{{item}}色</view>
+        </scroll-view>
       </view>
     </view>
   </block>

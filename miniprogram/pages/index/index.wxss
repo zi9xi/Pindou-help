@@ -196,36 +196,57 @@
   box-sizing: border-box;
 }
 
-.chip-count {
-  font-size: 20rpx;
-  color: var(--text-dim);
+.chip-code {
+  font-size: 22rpx;
+  font-weight: 600;
+  color: var(--text);
   margin-top: 8rpx;
 }
 
-/* ========== 容差滑杆 ========== */
-.tolerance-row {
+.chip-count {
+  font-size: 20rpx;
+  color: var(--text-dim);
+  margin-top: 2rpx;
+}
+
+/* ========== 豆盘档位选择 ========== */
+.size-row {
   display: flex;
   align-items: center;
-  padding: 16rpx 32rpx 0;
+  padding: 16rpx 24rpx 0;
 }
 
-.tolerance-label {
+.size-label {
   font-size: 22rpx;
   color: var(--text-dim);
   flex-shrink: 0;
+  margin-right: 12rpx;
 }
 
-.tolerance-slider {
+.sizes {
   flex: 1;
-  margin: 0 16rpx;
+  white-space: nowrap;
 }
 
-.tolerance-value {
+.size-chip {
+  display: inline-block;
   font-size: 22rpx;
   color: var(--text-dim);
-  width: 48rpx;
-  text-align: right;
-  flex-shrink: 0;
+  background: var(--bg);
+  border: 2rpx solid var(--border);
+  border-radius: 999rpx;
+  padding: 8rpx 24rpx;
+  margin: 0 6rpx;
+}
+
+.size-chip:active {
+  transform: scale(0.94);
+}
+
+.size-active {
+  color: #ffffff;
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 /* ========== 校准面板 ========== */
