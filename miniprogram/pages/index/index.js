@@ -29,6 +29,16 @@ Page({
   },
 
   onReady() {
+    // canvas 在 wx:else 分支内，此时很可能尚未渲染，找不到属正常
+    this.initCanvas();
+  },
+
+  /** 初始化画布节点（可重复调用；成功后执行回调） */
+  initCanvas(cb) {
+    if (this.ctx) {
+      cb && cb();
+      return;
+    }
     this.createSelectorQuery()
       .select('#board')
       .fields({ node: true, size: true })
@@ -41,7 +51,7 @@ Page({
         this.boardH = res[0].height;
         this.canvas.width = res[0].width * this.dpr;
         this.canvas.height = res[0].height * this.dpr;
-        this.render();
+        cb && cb();
       });
   },
 
@@ -106,9 +116,13 @@ Page({
       colors: palette,
       totalBeads,
       selectedIndex: -1
+    }, () => {
+      // setData 完成后 canvas 节点才进入 DOM，此时初始化再渲染
+      this.initCanvas(() => {
+        this.fitView();
+        this.render();
+      });
     });
-    this.fitView();
-    this.render();
   },
 
   onToleranceChange(e) {
