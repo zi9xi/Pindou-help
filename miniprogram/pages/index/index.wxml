@@ -1,0 +1,69 @@
+<view class="page theme-{{theme}}">
+
+  <!-- 空状态：上传入口 -->
+  <view wx:if="{{!ready}}" class="empty" bindtap="chooseImage">
+    <view class="empty-card">
+      <view class="empty-icon">🧩</view>
+      <view class="empty-title">上传拼豆图纸</view>
+      <view class="empty-desc">选择一张已转换好的拼豆图（建议 PNG）{"\n"}点选任意颜色，图纸上只高亮该颜色的豆子</view>
+      <view class="btn-primary">选择图片</view>
+    </view>
+    <view class="empty-tip">单指拖动 · 双指缩放 · 点按格子选色</view>
+  </view>
+
+  <!-- 主界面 -->
+  <block wx:else>
+    <canvas
+      type="2d"
+      id="board"
+      class="board"
+      bindtouchstart="onTouchStart"
+      bindtouchmove="onTouchMove"
+      bindtouchend="onTouchEnd"
+      bindtouchcancel="onTouchEnd"
+    ></canvas>
+
+    <!-- 顶部信息栏 -->
+    <view class="topbar">
+      <view class="topbar-btn" bindtap="chooseImage">换图</view>
+      <view class="topbar-info">{{gridW}}×{{gridH}} · {{colors.length}}色 · 共{{totalBeads}}豆</view>
+      <view class="topbar-btn" bindtap="toggleTheme">{{theme === 'dark' ? '☀️' : '🌙'}}</view>
+    </view>
+
+    <!-- 底部颜色面板 -->
+    <view class="panel">
+      <view class="panel-header">
+        <text class="panel-title">{{selectedIndex >= 0 ? '只显示选中颜色 · 点图纸格子可切换' : '点击颜色，只显示它'}}</text>
+        <text wx:if="{{selectedIndex >= 0}}" class="panel-clear" bindtap="clearSelect">显示全部</text>
+      </view>
+
+      <scroll-view scroll-x enhanced show-scrollbar="{{false}}" class="chips">
+        <view
+          wx:for="{{colors}}"
+          wx:key="key"
+          class="chip {{selectedIndex === index ? 'chip-active' : ''}}"
+          data-index="{{index}}"
+          bindtap="onChipTap"
+        >
+          <view class="chip-color" style="background: {{item.hex}};"></view>
+          <text class="chip-count">{{item.count}}</text>
+        </view>
+      </scroll-view>
+
+      <view class="tolerance-row">
+        <text class="tolerance-label">颜色合并</text>
+        <slider
+          class="tolerance-slider"
+          min="0"
+          max="50"
+          value="{{tolerance}}"
+          activeColor="#7c6cff"
+          backgroundColor="{{theme === 'dark' ? '#2c2c3e' : '#e2e2ec'}}"
+          block-size="18"
+          bindchange="onToleranceChange"
+        />
+        <text class="tolerance-value">{{tolerance}}</text>
+      </view>
+    </view>
+  </block>
+</view>

@@ -1,0 +1,19 @@
+{
+  "description": "拼豆摆豆助手 - 上传拼豆图纸，单色高亮辅助快速摆豆",
+  "compileType": "miniprogram",
+  "libVersion": "latest",
+  "appid": "touristappid",
+  "projectname": "fuse-bead-helper",
+  "miniprogramRoot": "miniprogram/",
+  "setting": {
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": true,
+    "urlCheck": false
+  },
+  "packOptions": {
+    "ignore": [],
+    "include": []
+  }
+}

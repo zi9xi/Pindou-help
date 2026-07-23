@@ -1,0 +1,14 @@
+{
+  "pages": [
+    "pages/index/index"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#14141f",
+    "navigationBarTitleText": "拼豆摆豆助手",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#14141f",
+    "backgroundTextStyle": "dark"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}
