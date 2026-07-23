@@ -74,19 +74,6 @@
 
 原生微信小程序（WXML / WXSS / JS + Canvas 2D），零依赖、无后端、无需服务器域名。
 
-## 本地运行
-
-1. 安装并打开[微信开发者工具](https://developers.weixin.qq.com/miniprogram/dev/devtools/download.html)。
-2. 选择“导入项目”，目录指向本仓库根目录。
-3. 使用自己的测试 AppID，或选择不使用 AppID 的本地测试方式。
-4. 编译后在首页选择一张带网格和格内色号的拼豆图纸。
-
-识别逻辑回归测试使用 Node.js 内置测试运行器：
-
-```bash
-node --test tests/grid-detection.test.js
-```
-
 ## 项目结构
 
 ```
