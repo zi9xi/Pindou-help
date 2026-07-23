@@ -589,6 +589,97 @@ Page({
         }
       }
     }
+
+    this.renderGridOverlay(cell, x, y, x0, y0, x1, y1, sel);
+  },
+
+  /**
+   * 网格叠加层：格子线 + 每 5 格粗线 + 边缘坐标 + 格内色号文字
+   * 单色高亮时只为选中色画色号标注
+   */
+  renderGridOverlay(cell, x, y, x0, y0, x1, y1, sel) {
+    if (cell < 6) return;
+    const ctx = this.ctx;
+    const dark = this.data.theme === 'dark';
+    const w = this.data.gridW;
+    const h = this.data.gridH;
+
+    // ---- 细网格线（每格） ----
+    ctx.strokeStyle = dark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.10)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const top = y + y0 * cell;
+    const bottom = y + (y1 + 1) * cell;
+    const left = x + x0 * cell;
+    const right = x + (x1 + 1) * cell;
+    for (let gx = x0; gx <= x1 + 1; gx++) {
+      const px = x + gx * cell;
+      ctx.moveTo(px, top);
+      ctx.lineTo(px, bottom);
+    }
+    for (let gy = y0; gy <= y1 + 1; gy++) {
+      const py = y + gy * cell;
+      ctx.moveTo(left, py);
+      ctx.lineTo(right, py);
+    }
+    ctx.stroke();
+
+    // ---- 粗网格线（每 5 格） ----
+    ctx.strokeStyle = dark ? 'rgba(255,255,255,0.28)' : 'rgba(0,0,0,0.28)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let gx = Math.ceil(x0 / 5) * 5; gx <= x1 + 1; gx += 5) {
+      const px = x + gx * cell;
+      ctx.moveTo(px, top);
+      ctx.lineTo(px, bottom);
+    }
+    for (let gy = Math.ceil(y0 / 5) * 5; gy <= y1 + 1; gy += 5) {
+      const py = y + gy * cell;
+      ctx.moveTo(left, py);
+      ctx.lineTo(right, py);
+    }
+    ctx.stroke();
+
+    // ---- 边缘坐标（每 5 格，钉在屏幕边缘，随滚动跟随） ----
+    if (cell >= 10) {
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = dark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)';
+      for (let gx = x0; gx <= x1; gx++) {
+        if ((gx + 1) % 5 !== 0) continue;
+        const px = x + (gx + 0.5) * cell;
+        if (px < 14 || px > this.boardW - 14) continue;
+        ctx.fillText(String(gx + 1), px, 12);
+      }
+      for (let gy = y0; gy <= y1; gy++) {
+        if ((gy + 1) % 5 !== 0) continue;
+        const py = y + (gy + 0.5) * cell;
+        if (py < 20 || py > this.boardH - 12) continue;
+        ctx.fillText(String(gy + 1), 10, py);
+      }
+    }
+
+    // ---- 格内色号文字（格子够大时） ----
+    if (cell >= 20) {
+      const fontSize = Math.max(8, Math.floor(cell * 0.32));
+      ctx.font = fontSize + 'px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (let gy = y0; gy <= y1; gy++) {
+        const rowBase = gy * w;
+        const py = y + gy * cell;
+        for (let gx = x0; gx <= x1; gx++) {
+          const ci = this.grid[rowBase + gx];
+          if (ci < 0) continue;
+          if (sel >= 0 && ci !== sel) continue; // 单色模式只标注选中色
+          const c = this.palette[ci];
+          const lum = c.r * 0.299 + c.g * 0.587 + c.b * 0.114;
+          ctx.fillStyle = lum > 150 ? 'rgba(0,0,0,0.72)' : 'rgba(255,255,255,0.85)';
+          ctx.fillText(c.code, x + gx * cell + cell / 2, py + cell / 2);
+        }
+      }
+    }
   },
 
   /* ================= 手势 ================= */
