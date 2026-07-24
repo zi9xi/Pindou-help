@@ -31,14 +31,16 @@
   color: var(--text);
 }
 
-/* ========== 空状态 ========== */
-.empty {
+/* ========== 主页与历史记录 ========== */
+.home-scroll {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  min-height: 0;
+}
+
+.home {
   padding: 48rpx;
+  padding-bottom: calc(48rpx + env(safe-area-inset-bottom));
+  box-sizing: border-box;
 }
 
 .empty-card {
@@ -46,7 +48,7 @@
   background: var(--card);
   border: 2rpx dashed var(--border);
   border-radius: 32rpx;
-  padding: 80rpx 48rpx;
+  padding: 64rpx 48rpx;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -92,6 +94,108 @@
   margin-top: 40rpx;
   font-size: 24rpx;
   color: var(--text-dim);
+  text-align: center;
+}
+
+.history-section {
+  margin-top: 48rpx;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20rpx;
+}
+
+.history-title {
+  font-size: 32rpx;
+  font-weight: 700;
+}
+
+.history-count {
+  font-size: 22rpx;
+  color: var(--text-dim);
+}
+
+.history-grid {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0 -10rpx;
+}
+
+.history-card {
+  width: calc(50% - 20rpx);
+  margin: 10rpx;
+  overflow: hidden;
+  background: var(--card);
+  border: 2rpx solid var(--border);
+  border-radius: 24rpx;
+  box-sizing: border-box;
+}
+
+.history-card:active {
+  transform: scale(0.97);
+  border-color: var(--accent);
+}
+
+.history-thumb {
+  display: block;
+  width: 100%;
+  height: 210rpx;
+  background: var(--bg-canvas);
+}
+
+.history-body {
+  display: flex;
+  flex-direction: column;
+  padding: 18rpx;
+}
+
+.history-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 25rpx;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-meta {
+  margin-top: 8rpx;
+  color: var(--text-dim);
+  font-size: 22rpx;
+}
+
+.history-time {
+  margin-top: 6rpx;
+  color: var(--text-dim);
+  font-size: 20rpx;
+  opacity: 0.75;
+}
+
+.history-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 44rpx;
+  padding: 40rpx 24rpx;
+  border: 2rpx dashed var(--border);
+  border-radius: 24rpx;
+}
+
+.history-empty-title {
+  color: var(--text);
+  font-size: 26rpx;
+  font-weight: 600;
+}
+
+.history-empty-desc {
+  margin-top: 10rpx;
+  color: var(--text-dim);
+  font-size: 22rpx;
+  text-align: center;
+  line-height: 1.6;
 }
 
 /* ========== 画布（流式，占满中间区域） ========== */
@@ -99,6 +203,15 @@
   flex: 1;
   width: 100%;
   min-height: 0;
+}
+
+.back-swipe-zone {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 64rpx;
 }
 
 /* ========== 顶部栏 ========== */

@@ -72,10 +72,14 @@ function createNativePattern({
   return { data, width, height, offsetX, offsetY, pitch, cols, rows };
 }
 
-function createCoordinatePattern({ includeLegend = true, topOffset = 0 } = {}) {
-  const pitch = 12;
-  const cols = 7;
-  const rows = 8;
+function createCoordinatePattern({
+  includeLegend = true,
+  topOffset = 0,
+  axisLikeTitle = false,
+  pitch = 12,
+  cols = 7,
+  rows = 8
+} = {}) {
   const totalCols = cols + 2;
   const totalRows = rows + 2;
   const width = totalCols * pitch;
@@ -100,6 +104,14 @@ function createCoordinatePattern({ includeLegend = true, topOffset = 0 } = {}) {
   }
 
   fill(0, 0, width, height, [248, 248, 248]);
+  if (axisLikeTitle && topOffset >= pitch) {
+    // 标题文字恰好落在网格相位上，视觉上会形成一条“浅底 + 大量文字”的假坐标栏。
+    for (let col = 1; col <= cols; col++) {
+      const left = col * pitch;
+      const top = topOffset - pitch;
+      fill(left + 3, top + 2, left + 8, top + 8, [20, 20, 20]);
+    }
+  }
   for (let row = 1; row <= rows; row++) {
     for (let col = 1; col <= cols; col++) {
       const left = col * pitch;
@@ -150,6 +162,91 @@ function createCoordinatePattern({ includeLegend = true, topOffset = 0 } = {}) {
   }
 
   return { data, width, height, cols, rows, pitch, topOffset };
+}
+
+function createCompressedColoredPattern() {
+  const pitch = 8;
+  const cols = 15;
+  const rows = 18;
+  const margin = 4;
+  const dataLeft = margin + pitch;
+  const dataTop = margin + pitch;
+  const rightAxis = dataLeft + cols * pitch;
+  const bottomAxis = dataTop + rows * pitch;
+  const width = margin * 2 + (cols + 2) * pitch;
+  const height = bottomAxis + pitch + 32;
+  const data = new Uint8ClampedArray(width * height * 4);
+
+  function fill(left, top, right, bottom, color) {
+    for (let y = Math.max(0, top); y < Math.min(height, bottom); y++) {
+      for (let x = Math.max(0, left); x < Math.min(width, right); x++) {
+        const offset = (y * width + x) * 4;
+        data[offset] = color[0];
+        data[offset + 1] = color[1];
+        data[offset + 2] = color[2];
+        data[offset + 3] = 255;
+      }
+    }
+  }
+  function mark(left, top) {
+    fill(left + 3, top + 2, left + 5, top + 6, [25, 25, 25]);
+  }
+
+  fill(0, 0, width, height, [250, 250, 250]);
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const shade = (row + col) % 2 ? 245 : 252;
+      fill(
+        dataLeft + col * pitch + 1,
+        dataTop + row * pitch + 1,
+        dataLeft + (col + 1) * pitch,
+        dataTop + (row + 1) * pitch,
+        [shade, shade, shade]
+      );
+      if ((row + col) % 4 === 0) {
+        fill(
+          dataLeft + col * pitch + 1,
+          dataTop + row * pitch + 1,
+          dataLeft + (col + 1) * pitch,
+          dataTop + (row + 1) * pitch,
+          [70, 70, 70]
+        );
+        fill(
+          dataLeft + col * pitch + 3,
+          dataTop + row * pitch + 2,
+          dataLeft + col * pitch + 5,
+          dataTop + row * pitch + 6,
+          [245, 245, 245]
+        );
+      }
+    }
+  }
+
+  // 四周坐标数字。
+  for (let col = 0; col < cols; col++) {
+    mark(dataLeft + col * pitch, margin);
+    mark(dataLeft + col * pitch, bottomAxis);
+  }
+  for (let row = 0; row < rows; row++) {
+    mark(margin, dataTop + row * pitch);
+    mark(rightAxis, dataTop + row * pitch);
+  }
+
+  // 淡灰细网格 + 每 5 格一条浅蓝主网格，模拟网页压缩图。
+  for (let col = 0; col <= cols; col++) {
+    const x = dataLeft + col * pitch;
+    fill(x, margin, x + 1, bottomAxis + pitch, [205, 205, 205]);
+    if (col % 5 === 0) fill(x, margin, x + 2, bottomAxis + pitch, [150, 215, 220]);
+  }
+  for (let row = 0; row <= rows; row++) {
+    const y = dataTop + row * pitch;
+    fill(margin, y, rightAxis + pitch, y + 1, [205, 205, 205]);
+    if (row % 5 === 0) fill(margin, y, rightAxis + pitch, y + 2, [150, 215, 220]);
+  }
+
+  // 图例噪声必须排除在网格之外。
+  fill(8, bottomAxis + pitch + 8, width - 8, height - 4, [215, 120, 150]);
+  return { data, width, height, cols, rows, pitch };
 }
 
 function detect(pattern) {
@@ -203,6 +300,76 @@ test('finds a coordinate chart below a title instead of counting the title as ro
   assert.ok(Math.abs(result.offY - (pattern.topOffset + pattern.pitch)) <= 2);
 });
 
+test('does not count an axis-like title band as the first bead row', () => {
+  const pattern = createCoordinatePattern({
+    includeLegend: false,
+    topOffset: 30,
+    axisLikeTitle: true,
+    cols: 27,
+    rows: 29
+  });
+  const result = detect(pattern);
+
+  assert.equal(result.coordinateChart, true);
+  assert.equal(result.cols, pattern.cols);
+  assert.equal(result.rows, pattern.rows);
+  assert.ok(Math.abs(result.offY - (pattern.topOffset + pattern.pitch)) <= 2);
+});
+
+test('chooses the coordinate row after an adjacent axis-like title row', () => {
+  const metrics = [
+    { top: 22, labelRate: 0.8, neutralRate: 1 },
+    { top: 59, labelRate: 0.96, neutralRate: 1 },
+    { top: 96, labelRate: 0.3, neutralRate: 0.7 }
+  ];
+  const isAxis = (metric) => metric.labelRate >= 0.7 && metric.neutralRate >= 0.9;
+
+  assert.equal(
+    pageDefinition.selectTopCoordinateRow(metrics, 1342, isAxis),
+    1
+  );
+});
+
+test('recovers a compressed chart from its colored five-cell grid lines', () => {
+  const pattern = createCompressedColoredPattern();
+  const context = {
+    ...pageDefinition,
+    imageData: { data: pattern.data },
+    srcW: pattern.width,
+    srcH: pattern.height
+  };
+  const result = pageDefinition.detectColoredCoordinateChart.call(
+    context,
+    pattern.data,
+    pattern.width,
+    pattern.height,
+    pattern.pitch
+  );
+
+  assert.ok(result);
+  assert.equal(result.coordinateChart, true);
+  assert.equal(result.coloredGrid, true);
+  assert.equal(result.cols, pattern.cols);
+  assert.equal(result.rows, pattern.rows);
+  assert.ok(Math.abs(result.pitchX - pattern.pitch) < 0.5);
+});
+
+test('fits continuous muted grid lines despite stronger isolated title edges', () => {
+  const profile = new Float32Array(1080);
+  const pitch = 13.34;
+  const phase = 6;
+  for (let x = phase; x < profile.length; x += pitch) {
+    profile[Math.round(x)] = 420;
+  }
+  // 标题/外框边缘更强，但不具备长周期。
+  for (const x of [18, 47, 115, 391, 742, 1068]) profile[x] = 900;
+
+  const result = pageDefinition.fitNeutralGridLattice(profile, 13.2);
+  assert.ok(result);
+  assert.ok(Math.abs(result.pitch - pitch) < 0.2);
+  assert.ok(Math.abs(result.phase - phase) < 2);
+});
+
 test('rejects strong edges that do not form a periodic grid', () => {
   const projection = new Float32Array(100);
   for (const x of [10, 20, 31, 45, 61, 80]) projection[x] = 100;
@@ -236,6 +403,25 @@ test('keeps enough source resolution for small cells in an original chart', () =
     width: 2048,
     height: 1365
   });
+});
+
+test('upscales small cells to a readable integer size without exceeding memory cap', () => {
+  assert.equal(
+    pageDefinition.enhancementFactor(
+      { det: true, pitchX: 12.2, pitchY: 12.2 },
+      1080,
+      1456
+    ),
+    2
+  );
+  assert.equal(
+    pageDefinition.enhancementFactor(
+      { det: true, pitchX: 24, pitchY: 24 },
+      1080,
+      1456
+    ),
+    1
+  );
 });
 
 test('manual cell-count correction redistributes cells inside detected bounds', () => {
@@ -437,6 +623,29 @@ test('maps Beads Creator exported display colors to their printed codes', () => 
   assert.deepEqual(counts, { A23: 1, C20: 1, H16: 1, H17: 1 });
 });
 
+test('keeps JPEG variants of the same G4 chart color under one printed code', () => {
+  const raw = new Uint8ClampedArray([
+    222, 177, 129, 255,
+    225, 178, 129, 255
+  ]);
+  const context = {
+    ...pageDefinition,
+    data: { paletteSize: 221, gridW: 2, gridH: 1, theme: 'dark' },
+    beadImageData: { data: raw, width: 2, height: 1 },
+    gridSpec: { coordinateChart: true },
+    buildPatternCanvases() {},
+    setData(update) {
+      Object.assign(this.data, update);
+    }
+  };
+
+  pageDefinition.process.call(context);
+  assert.deepEqual(
+    context.palette.map((color) => [color.code, color.count]),
+    [['G4', 2]]
+  );
+});
+
 test('rejects labeled color blocks that do not match the active bead palette', () => {
   const raw = new Uint8ClampedArray([
     253, 233, 226, 255, // E11
@@ -467,6 +676,40 @@ test('uses canvas-relative touch coordinates without subtracting the board offse
   assert.deepEqual(
     pageDefinition.localTouch.call(context, { clientX: 74, clientY: 180 }),
     { x: 50, y: 60 }
+  );
+});
+
+test('history keeps newest valid uploads and adds display timestamps', () => {
+  const items = [
+    { id: 'old', path: 'old.jpg', createdAt: 1000 },
+    null,
+    { id: 'new', path: 'new.jpg', createdAt: 2000 },
+    { id: 'broken', createdAt: 3000 }
+  ];
+  const history = pageDefinition.normalizeHistory.call(pageDefinition, items);
+
+  assert.deepEqual(history.map((item) => item.id), ['new', 'old']);
+  assert.equal(typeof history[0].dateText, 'string');
+  assert.ok(history[0].dateText.length > 0);
+});
+
+test('right swipe returns home only from the left edge with horizontal intent', () => {
+  const edgeGesture = { mode: 'back', sx: 12, sy: 100 };
+  assert.equal(
+    pageDefinition.isBackSwipe(edgeGesture, { x: 112, y: 116 }),
+    true
+  );
+  assert.equal(
+    pageDefinition.isBackSwipe(edgeGesture, { x: 70, y: 110 }),
+    false
+  );
+  assert.equal(
+    pageDefinition.isBackSwipe(edgeGesture, { x: 112, y: 190 }),
+    false
+  );
+  assert.equal(
+    pageDefinition.isBackSwipe({ mode: 'pan', sx: 12, sy: 100 }, { x: 150, y: 100 }),
+    false
   );
 });
 

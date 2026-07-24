@@ -1,20 +1,59 @@
 <view class="page theme-{{theme}}">
 
-  <!-- 空状态：上传入口 -->
-  <view wx:if="{{stage === 'empty'}}" class="empty" bindtap="chooseImage">
-    <view class="empty-card">
-      <view class="empty-icon">🧩</view>
-      <view class="empty-title">上传拼豆图纸</view>
-      <view class="empty-desc">选择一张带网格的拼豆图纸{{'\n'}}自动识别豆数，点选颜色只高亮它</view>
-      <view class="btn-primary">选择图片</view>
+  <!-- 主页：上传入口 + 本地历史 -->
+  <scroll-view wx:if="{{stage === 'empty'}}" scroll-y class="home-scroll">
+    <view class="home">
+      <view class="empty-card" bindtap="chooseImage">
+        <view class="empty-icon">🧩</view>
+        <view class="empty-title">上传拼豆图纸</view>
+        <view class="empty-desc">选择一张带网格的拼豆图纸{{'\n'}}自动识别豆数，点选颜色只高亮它</view>
+        <view class="btn-primary">选择图片</view>
+      </view>
+
+      <view wx:if="{{history.length}}" class="history-section">
+        <view class="history-header">
+          <text class="history-title">最近上传</text>
+          <text class="history-count">{{history.length}} 张图纸</text>
+        </view>
+        <view class="history-grid">
+          <view
+            wx:for="{{history}}"
+            wx:key="id"
+            class="history-card"
+            data-id="{{item.id}}"
+            bindtap="openHistory"
+          >
+            <image class="history-thumb" src="{{item.path}}" mode="aspectFill"></image>
+            <view class="history-body">
+              <text class="history-name">{{item.name}}</text>
+              <text class="history-meta">
+                {{item.cols}}×{{item.rows}}{{item.totalBeads ? ' · ' + item.totalBeads + '豆' : ' · 待确认'}}
+              </text>
+              <text class="history-time">{{item.dateText}}</text>
+            </view>
+          </view>
+        </view>
+      </view>
+
+      <view wx:else class="history-empty">
+        <text class="history-empty-title">还没有历史图纸</text>
+        <text class="history-empty-desc">上传后的图片会保存在这里，之后可以直接继续查看</text>
+      </view>
+      <view class="empty-tip">单指拖动 · 双指缩放 · 点按格子选色</view>
     </view>
-    <view class="empty-tip">单指拖动 · 双指缩放 · 点按格子选色</view>
-  </view>
+  </scroll-view>
 
   <!-- 主界面（流式布局：顶栏 / 画布 / 面板） -->
   <block wx:else>
+    <view
+      class="back-swipe-zone"
+      catchtouchstart="onTouchStart"
+      catchtouchmove="onTouchMove"
+      catchtouchend="onTouchEnd"
+      catchtouchcancel="onTouchEnd"
+    ></view>
     <view class="topbar">
-      <view class="topbar-btn" bindtap="chooseImage">换图</view>
+      <view class="topbar-btn" bindtap="goHome">首页</view>
       <view class="topbar-info">{{stage === 'adjust' ? '对齐图纸网格后点确定' : gridW + '×' + gridH + ' · ' + paletteSize + '色盘 · 共' + totalBeads + '豆'}}</view>
       <view class="topbar-btn" bindtap="toggleTheme">{{theme === 'dark' ? '☀️' : '🌙'}}</view>
     </view>
